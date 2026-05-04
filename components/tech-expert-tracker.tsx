@@ -25,6 +25,8 @@ import {
   Settings as SettingsIcon,
   Lock,
   Minus,
+  LayoutGrid,
+  Rows3,
 } from "lucide-react"
 
 const SERVICES_COLOR = "#3b82f6" // blue
@@ -71,6 +73,8 @@ const HISTORY_KEY = "techExpertHistory"
 const MULTIPLIER_KEY = "techExpertMultiplier"
 const GOALS_KEY = "techExpertGoals" // monthly RAW services goal (per month key)
 const AUTO_MULT_KEY = "techExpertAutoMultiplier"
+const LAYOUT_MODE_KEY = "techExpertLayoutMode" // "compact" (legend visible, cards hidden) | "detailed" (legend hidden, cards visible)
+type LayoutMode = "compact" | "detailed"
 
 const DEFAULT_GOAL = 50000
 
@@ -129,6 +133,8 @@ export default function TechExpertTracker() {
   const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7))
   const [autoMultiplier, setAutoMultiplier] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Compact: legend next to chart, summary cards hidden. Detailed: cards visible, legend hidden.
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("compact")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Hydrate from localStorage
@@ -147,6 +153,8 @@ export default function TechExpertTracker() {
       if (savedGoals) setGoals(JSON.parse(savedGoals))
       const savedAuto = localStorage.getItem(AUTO_MULT_KEY)
       if (savedAuto !== null) setAutoMultiplier(savedAuto === "true")
+      const savedLayout = localStorage.getItem(LAYOUT_MODE_KEY)
+      if (savedLayout === "compact" || savedLayout === "detailed") setLayoutMode(savedLayout)
     } catch {
       /* noop */
     }
@@ -276,6 +284,11 @@ export default function TechExpertTracker() {
   const updateAutoMultiplier = (next: boolean) => {
     setAutoMultiplier(next)
     localStorage.setItem(AUTO_MULT_KEY, String(next))
+  }
+
+  const updateLayoutMode = (next: LayoutMode) => {
+    setLayoutMode(next)
+    localStorage.setItem(LAYOUT_MODE_KEY, next)
   }
 
   // Auto-derive the global multiplier from the forecast when auto mode is ON
@@ -657,11 +670,13 @@ export default function TechExpertTracker() {
 
           {/* Side-by-side: donut anchor on left, vertical Legend in the middle, Total Balance on the right */}
           <div className="relative flex items-center gap-2.5 sm:gap-3">
-            {/* Donut: visual anchor on the left. No external labels — clean ring with empty center. */}
-            <div className="shrink-0 w-[128px] h-[128px] sm:w-[148px] sm:h-[148px] relative">
+            {/* Donut: visual anchor on the left. No external labels — clean ring with empty center.
+                `overflow-visible` on the SVG + small inner margin lets the bonusGlow filter
+                bleed past the chart bounds without being clipped at the bottom edge. */}
+            <div className="shrink-0 w-[128px] h-[128px] sm:w-[148px] sm:h-[148px] relative [&_svg]:!overflow-visible">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                  <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                     <defs>
                       {/* Diagonal striped fill used for the negative-multiplier "loss" tail */}
                       <pattern
@@ -739,40 +754,47 @@ export default function TechExpertTracker() {
               )}
             </div>
 
-            {/* Compact vertical Legend — replaces leader lines. Icon + Name + Final UAH (+ delta in subtle font). */}
-            <ul className="flex-1 min-w-0 self-center space-y-1.5 py-1">
-              {legendItems.length === 0 ? (
-                <li className="text-[11px] text-slate-500">No data yet</li>
-              ) : (
-                legendItems.map((item) => (
-                  <li key={item.name} className="flex items-center gap-1.5 min-w-0">
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ background: item.color, boxShadow: `0 0 6px ${item.color}` }}
-                    />
-                    <span className="text-slate-400 shrink-0" style={{ color: item.color }}>
-                      {item.icon}
-                    </span>
-                    <span className="text-[11px] sm:text-xs text-slate-300 truncate min-w-0 flex-1">
-                      {item.name}
-                    </span>
-                    <span className="text-[11px] sm:text-xs font-semibold text-white tabular-nums shrink-0">
-                      {fmtUah(item.value)}
-                    </span>
-                    {item.delta !== undefined && Math.abs(item.delta) >= 0.5 && (
+            {/* Compact vertical Legend — only shown in "compact" layout mode.
+                Each row: dot + colored icon + "Name:" + final UAH + subtle delta.
+                Name and value sit close together (gap-1) for a tight, readable list. */}
+            {layoutMode === "compact" && (
+              <ul className="flex-1 min-w-0 self-center space-y-1.5 py-1">
+                {legendItems.length === 0 ? (
+                  <li className="text-[11px] text-slate-500">No data yet</li>
+                ) : (
+                  legendItems.map((item) => (
+                    <li key={item.name} className="flex items-center gap-1.5 min-w-0">
                       <span
-                        className={`text-[9px] sm:text-[10px] font-medium tabular-nums shrink-0 ${
-                          item.delta > 0 ? "text-cyan-300/90" : "text-red-300/90"
-                        }`}
-                      >
-                        {item.delta > 0 ? "+" : "-"}
-                        {fmtUah(Math.abs(item.delta))}
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ background: item.color, boxShadow: `0 0 6px ${item.color}` }}
+                      />
+                      <span className="shrink-0" style={{ color: item.color }}>
+                        {item.icon}
                       </span>
-                    )}
-                  </li>
-                ))
-              )}
-            </ul>
+                      <span className="text-[11px] sm:text-xs text-slate-300 truncate min-w-0">
+                        {item.name}
+                        <span className="text-slate-500">:</span>
+                      </span>
+                      <span className="text-[11px] sm:text-xs font-semibold text-white tabular-nums shrink-0">
+                        {fmtUah(item.value)}
+                      </span>
+                      {item.delta !== undefined && Math.abs(item.delta) >= 0.5 && (
+                        <span
+                          className={`text-[9px] sm:text-[10px] font-medium tabular-nums shrink-0 ${
+                            item.delta > 0 ? "text-cyan-300/90" : "text-red-300/90"
+                          }`}
+                        >
+                          {item.delta > 0 ? "+" : "-"}
+                          {fmtUah(Math.abs(item.delta))}
+                        </span>
+                      )}
+                    </li>
+                  ))
+                )}
+              </ul>
+            )}
+            {/* Spacer in detailed mode so donut + total balance still flow nicely */}
+            {layoutMode === "detailed" && <div className="flex-1 min-w-0" />}
 
             {/* Total Balance — far right, with breathing room from the chart */}
             <div className="shrink-0 self-center text-right pl-1">
@@ -919,10 +941,9 @@ export default function TechExpertTracker() {
                 <span className="text-[10px] text-slate-500">applies to Services &amp; Base Rate</span>
               )}
             </div>
-            {/* Negative horizontal margin offsets the hero card's `p-4`, so the
-                button grid extends to the card's edges and aligns horizontally
-                with the summary cards (which span the page container width). */}
-            <div className={`-mx-4 grid grid-cols-5 gap-2 ${autoMultiplier ? "opacity-70" : ""}`}>
+            {/* Multiplier buttons stay within the hero card's inner width.
+                `min-w-0` on the grid prevents long labels from forcing horizontal overflow. */}
+            <div className={`grid grid-cols-5 gap-1.5 min-w-0 ${autoMultiplier ? "opacity-70" : ""}`}>
               {MULTIPLIERS.map((m) => {
                 const label = m > 0 ? `+${m * 100}%` : m === 0 ? "0%" : `${m * 100}%`
                 const isActive = globalMultiplier === m
@@ -968,41 +989,44 @@ export default function TechExpertTracker() {
           </div>
         </section>
 
-        {/* Metric chips: 4 categories — 2x2 on mobile, 4-col on larger screens */}
-        <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
-          <MetricChip
-            label="Services"
-            value={monthTotals.services}
-            color={SERVICES_COLOR}
-            fraction={fracServices}
-            icon={<Briefcase className="w-3.5 h-3.5" />}
-            multiplier={globalMultiplier}
-            showMultiplierDelta
-          />
-          <MetricChip
-            label="Base Rate"
-            value={monthTotals.base}
-            color={BASE_COLOR}
-            fraction={fracBase}
-            icon={<CheckCircle2 className="w-3.5 h-3.5" />}
-            multiplier={globalMultiplier}
-            showMultiplierDelta
-          />
-          <MetricChip
-            label="Trading"
-            value={monthTotals.trading}
-            color={TRADING_COLOR}
-            fraction={fracTrade}
-            icon={<Coins className="w-3.5 h-3.5" />}
-          />
-          <MetricChip
-            label="Tea"
-            value={monthTotals.tea}
-            color={TEA_COLOR}
-            fraction={fracTea}
-            icon={<Coffee className="w-3.5 h-3.5" />}
-          />
-        </section>
+        {/* Metric chips: 4 categories — only rendered in "detailed" layout mode.
+            In compact mode, the legend next to the donut already conveys per-category totals. */}
+        {layoutMode === "detailed" && (
+          <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
+            <MetricChip
+              label="Services"
+              value={monthTotals.services}
+              color={SERVICES_COLOR}
+              fraction={fracServices}
+              icon={<Briefcase className="w-3.5 h-3.5" />}
+              multiplier={globalMultiplier}
+              showMultiplierDelta
+            />
+            <MetricChip
+              label="Base Rate"
+              value={monthTotals.base}
+              color={BASE_COLOR}
+              fraction={fracBase}
+              icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+              multiplier={globalMultiplier}
+              showMultiplierDelta
+            />
+            <MetricChip
+              label="Trading"
+              value={monthTotals.trading}
+              color={TRADING_COLOR}
+              fraction={fracTrade}
+              icon={<Coins className="w-3.5 h-3.5" />}
+            />
+            <MetricChip
+              label="Tea"
+              value={monthTotals.tea}
+              color={TEA_COLOR}
+              fraction={fracTea}
+              icon={<Coffee className="w-3.5 h-3.5" />}
+            />
+          </section>
+        )}
 
         {/* Input Form — operates on the SELECTED DATE draft */}
         <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4 mb-4 space-y-4">
@@ -1206,6 +1230,8 @@ export default function TechExpertTracker() {
           autoMultiplier={autoMultiplier}
           onToggleAutoMultiplier={updateAutoMultiplier}
           forecastPct={forecastPct}
+          layoutMode={layoutMode}
+          onChangeLayoutMode={updateLayoutMode}
           onClose={() => setSettingsOpen(false)}
           onExport={exportData}
           onImport={triggerImport}
@@ -1620,6 +1646,8 @@ function SettingsModal({
   autoMultiplier,
   onToggleAutoMultiplier,
   forecastPct,
+  layoutMode,
+  onChangeLayoutMode,
   onClose,
   onExport,
   onImport,
@@ -1630,6 +1658,8 @@ function SettingsModal({
   autoMultiplier: boolean
   onToggleAutoMultiplier: (next: boolean) => void
   forecastPct: number
+  layoutMode: LayoutMode
+  onChangeLayoutMode: (next: LayoutMode) => void
   onClose: () => void
   onExport: () => void
   onImport: () => void
@@ -1765,6 +1795,47 @@ function SettingsModal({
 
             <div className="text-[10px] text-slate-500 leading-relaxed">
               Bands: &lt;81% → -20%, 81–90% → -10%, 91–109% → 0%, 110–119% → +10%, ≥120% → +20%.
+            </div>
+          </div>
+
+          {/* Dashboard layout — segmented control: Compact (legend visible) vs Detailed (cards visible) */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <LayoutGrid className="w-4 h-4 text-blue-300" />
+              <span className="text-sm font-semibold text-white">Dashboard Layout</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              <span className="text-slate-200 font-medium">Compact</span> shows a legend next to the chart and
+              hides the summary cards. <span className="text-slate-200 font-medium">Detailed</span> hides the
+              legend and shows the full summary cards row.
+            </p>
+            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-white/5 border border-white/10">
+              <button
+                type="button"
+                onClick={() => onChangeLayoutMode("compact")}
+                aria-pressed={layoutMode === "compact"}
+                className={`flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold transition-all ${
+                  layoutMode === "compact"
+                    ? "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                    : "text-slate-300 hover:bg-white/5"
+                }`}
+              >
+                <Rows3 className="w-3.5 h-3.5" />
+                Compact
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeLayoutMode("detailed")}
+                aria-pressed={layoutMode === "detailed"}
+                className={`flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold transition-all ${
+                  layoutMode === "detailed"
+                    ? "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                    : "text-slate-300 hover:bg-white/5"
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                Detailed
+              </button>
             </div>
           </div>
 
