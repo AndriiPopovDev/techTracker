@@ -523,7 +523,9 @@ export default function TechExpertTracker() {
           data.push({
             name: `${name} Bonus`,
             value: Number(bonus.toFixed(2)),
-            color: BONUS_COLOR,
+            // Bright pale-cyan core (#a5f3fc) instead of the deeper cyan-500 — looks like
+            // a glowing neon tube once the bonusGlow halo filter is applied on top.
+            color: "#a5f3fc",
             hideLabel: true,
             filterOverride: "url(#bonusGlow)",
           })
@@ -672,12 +674,13 @@ export default function TechExpertTracker() {
             </div>
           </div>
 
-          {/* Donut chart with external labels + Total Balance overlaid in the center */}
-          <div>
-            <div className="relative w-full h-[240px] sm:h-[260px]">
+          {/* Side-by-side: donut on the left with external labels, Total Balance on the right */}
+          <div className="relative flex items-center gap-3 sm:gap-4">
+            {/* Donut: fixed-width column on the left so labels have room to render */}
+            <div className="shrink-0 w-[170px] h-[170px] sm:w-[190px] sm:h-[190px] relative">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <PieChart margin={{ top: 16, right: 72, bottom: 16, left: 72 }}>
+                  <PieChart margin={{ top: 8, right: 44, bottom: 8, left: 44 }}>
                     <defs>
                       {/* Diagonal striped fill used for the negative-multiplier "loss" tail */}
                       <pattern
@@ -690,15 +693,23 @@ export default function TechExpertTracker() {
                         <rect width={6} height={6} fill="#ef4444" fillOpacity={0.55} />
                         <line x1={0} y1={0} x2={0} y2={6} stroke="#fecaca" strokeOpacity={0.55} strokeWidth={1} />
                       </pattern>
-                      {/* Strong neon halo for the positive-multiplier "bonus" tail (cyan) */}
-                      <filter id="bonusGlow" x="-75%" y="-75%" width="250%" height="250%">
-                        <feGaussianBlur stdDeviation="1.4" result="b1" />
-                        <feGaussianBlur stdDeviation="4" result="b2" />
-                        <feFlood floodColor="#67e8f9" floodOpacity="0.9" result="halo" />
-                        <feComposite in="halo" in2="b2" operator="in" result="halo2" />
+                      {/* Bright neon-tube cyan: pale-cyan core (almost white) + intense
+                          turquoise halo. Renders the bonus arc as a glowing neon segment. */}
+                      <radialGradient id="bonusCore" cx="50%" cy="50%" r="50%">
+                        <stop offset="0%" stopColor="#ecfeff" stopOpacity={1} />
+                        <stop offset="55%" stopColor="#a5f3fc" stopOpacity={1} />
+                        <stop offset="100%" stopColor="#22d3ee" stopOpacity={1} />
+                      </radialGradient>
+                      <filter id="bonusGlow" x="-100%" y="-100%" width="300%" height="300%">
+                        <feGaussianBlur in="SourceAlpha" stdDeviation="2.5" result="blurA" />
+                        <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="blurB" />
+                        <feFlood floodColor="#22d3ee" floodOpacity="1" result="haloInner" />
+                        <feComposite in="haloInner" in2="blurA" operator="in" result="haloA" />
+                        <feFlood floodColor="#06b6d4" floodOpacity="0.85" result="haloOuter" />
+                        <feComposite in="haloOuter" in2="blurB" operator="in" result="haloB" />
                         <feMerge>
-                          <feMergeNode in="halo2" />
-                          <feMergeNode in="b1" />
+                          <feMergeNode in="haloB" />
+                          <feMergeNode in="haloA" />
                           <feMergeNode in="SourceGraphic" />
                         </feMerge>
                       </filter>
@@ -707,12 +718,12 @@ export default function TechExpertTracker() {
                       data={chartData}
                       cx="50%"
                       cy="50%"
-                      innerRadius="58%"
-                      outerRadius="78%"
+                      innerRadius="60%"
+                      outerRadius="92%"
                       paddingAngle={0}
                       dataKey="value"
                       stroke="none"
-                      cornerRadius={4}
+                      cornerRadius={3}
                       labelLine={false}
                       label={renderExternalDonutLabel}
                       isAnimationActive={false}
@@ -740,29 +751,24 @@ export default function TechExpertTracker() {
                 </ResponsiveContainer>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
-                  <div className="w-[140px] h-[140px] rounded-full border-2 border-dashed border-white/10 flex items-center justify-center text-[10px] text-slate-500 text-center px-2">
+                  <div className="w-[120px] h-[120px] rounded-full border-2 border-dashed border-white/10 flex items-center justify-center text-[10px] text-slate-500 text-center px-2">
                     No shifts yet
                   </div>
                 </div>
               )}
-
-              {/* Center overlay — Total Balance focal point. Lives inside the
-                  chart-sized wrapper so inset-0 maps to the donut's true center. */}
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="flex flex-col items-center justify-center text-center leading-none">
-                  <span className="text-[10px] uppercase tracking-[0.18em] text-blue-200/70 font-semibold">
-                    Total Balance
-                  </span>
-                  <span className="mt-1.5 text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight">
-                    {fmtUah(monthTotals.total)}
-                  </span>
-                  <span className="mt-1 text-[10px] font-semibold text-blue-200/70 tracking-wider">UAH</span>
-                </div>
-              </div>
             </div>
 
-            {/* Meta row — trend, shifts/avg, multiplier */}
-            <div className="mt-1 flex items-center justify-center gap-1.5 flex-wrap text-[11px]">
+            {/* Total Balance + meta — sits to the RIGHT of the donut */}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-1.5 flex-wrap leading-none">
+                <span className="text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight">
+                  {fmtUah(monthTotals.total)}
+                </span>
+                <span className="text-xs font-semibold text-blue-200/70">UAH</span>
+              </div>
+
+              {/* Meta row — trend, shifts/avg, multiplier */}
+              <div className="mt-2 flex items-center gap-1.5 flex-wrap text-[11px]">
               {trendDeltaPct === null ? (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-medium text-slate-400">
                   <Minus className="w-3 h-3" />
@@ -794,7 +800,22 @@ export default function TechExpertTracker() {
               </span>
 
               <span
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 font-bold ${multiplierTone}`}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold ${
+                  multiplierPct > 0
+                    ? "bg-cyan-400/10 border border-cyan-300/40 text-cyan-200"
+                    : multiplierPct < 0
+                      ? "bg-red-500/10 border border-red-400/30 text-red-300"
+                      : "bg-white/5 border border-white/10 text-slate-200"
+                }`}
+                style={
+                  multiplierPct > 0
+                    ? {
+                        textShadow: "0 0 6px rgba(34,211,238,0.75), 0 0 14px rgba(6,182,212,0.55)",
+                        boxShadow:
+                          "0 0 0 1px rgba(34,211,238,0.25), 0 0 12px rgba(34,211,238,0.35), inset 0 0 8px rgba(165,243,252,0.15)",
+                      }
+                    : undefined
+                }
               >
                 {multiplierPct > 0 ? "+" : ""}
                 {multiplierPct}%
@@ -804,6 +825,7 @@ export default function TechExpertTracker() {
                   </span>
                 )}
               </span>
+              </div>
             </div>
           </div>
 
@@ -885,12 +907,28 @@ export default function TechExpertTracker() {
               {MULTIPLIERS.map((m) => {
                 const label = m > 0 ? `+${m * 100}%` : m === 0 ? "0%" : `${m * 100}%`
                 const isActive = globalMultiplier === m
-                const tone =
-                  m > 0
-                    ? "shadow-[0_0_18px_-4px_rgba(34,197,94,0.7)] bg-emerald-500/90 text-white"
-                    : m < 0
-                      ? "shadow-[0_0_18px_-4px_rgba(239,68,68,0.7)] bg-red-500/90 text-white"
-                      : "shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)] bg-blue-500/90 text-white"
+                // Active styling: positive → electric cyan neon, negative → red neon, zero → blue.
+                // Inline style is used for the cyan glow because Tailwind's arbitrary shadow
+                // utilities can't compose multiple layered glows as cleanly.
+                const isPositiveActive = isActive && m > 0
+                const isNegativeActive = isActive && m < 0
+                const isZeroActive = isActive && m === 0
+                let activeClass = ""
+                let activeStyle: React.CSSProperties | undefined
+                if (isPositiveActive) {
+                  activeClass = "text-slate-900 border border-cyan-200/60"
+                  activeStyle = {
+                    background:
+                      "linear-gradient(180deg, #ecfeff 0%, #a5f3fc 45%, #22d3ee 100%)",
+                    boxShadow:
+                      "0 0 0 1px rgba(165,243,252,0.7) inset, 0 0 14px rgba(34,211,238,0.85), 0 0 28px rgba(6,182,212,0.55)",
+                    textShadow: "0 0 8px rgba(255,255,255,0.6)",
+                  }
+                } else if (isNegativeActive) {
+                  activeClass = "bg-red-500/90 text-white shadow-[0_0_18px_-4px_rgba(239,68,68,0.7)]"
+                } else if (isZeroActive) {
+                  activeClass = "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                }
                 return (
                   <button
                     key={m}
@@ -899,8 +937,9 @@ export default function TechExpertTracker() {
                     disabled={autoMultiplier}
                     aria-disabled={autoMultiplier}
                     className={`py-2 rounded-xl text-xs font-semibold transition-all ${
-                      isActive ? tone : "bg-white/5 text-slate-300 border border-white/10 hover:bg-white/10"
+                      isActive ? activeClass : "bg-white/5 text-slate-300 border border-white/10 hover:bg-white/10"
                     } ${autoMultiplier ? "cursor-not-allowed" : ""}`}
+                    style={isActive ? activeStyle : undefined}
                   >
                     {label}
                   </button>
@@ -1248,8 +1287,11 @@ function MetricChip({
             className="h-full transition-all duration-500"
             style={{
               width: `${bonusWidthPct}%`,
-              background: BONUS_COLOR,
-              boxShadow: `0 0 6px ${BONUS_COLOR}, 0 0 12px ${BONUS_GLOW}, 0 0 18px ${BONUS_GLOW}`,
+              // Pale-cyan core gives the "neon tube" look; the halo is layered shadows
+              // in cyan-300/500 so the segment glows even on dark backgrounds.
+              background: "linear-gradient(180deg, #ecfeff 0%, #a5f3fc 60%, #22d3ee 100%)",
+              boxShadow:
+                "0 0 4px #ecfeff, 0 0 8px #67e8f9, 0 0 14px #06b6d4, 0 0 22px rgba(6,182,212,0.7)",
             }}
             aria-label={`Multiplier bonus +${Math.round(multiplier * 100)}%`}
           />
