@@ -1,0 +1,1447 @@
+"use client"
+
+import { useState, useEffect, useMemo, useRef } from "react"
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts"
+import {
+  Calendar,
+  Wallet,
+  Briefcase,
+  Percent,
+  TrendingUp,
+  TrendingDown,
+  Coins,
+  Coffee,
+  CheckCircle2,
+  History as HistoryIcon,
+  Sparkles,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  Pencil,
+  Trash2,
+  Download,
+  Upload,
+  Target,
+  Settings as SettingsIcon,
+  Lock,
+  Minus,
+} from "lucide-react"
+
+const SERVICES_COLOR = "#3b82f6" // blue
+const BASE_COLOR = "#22c55e" // green
+const TRADING_COLOR = "#f59e0b" // amber
+const TEA_COLOR = "#ec4899" // pink
+
+const MULTIPLIERS = [-0.2, -0.1, 0, 0.1, 0.2]
+
+type DraftRecord = {
+  servicesRaw: number | string
+  hasBaseRate: boolean
+  tradeEarnings: number | string
+  teaEarnings: number | string
+}
+
+type HistoryEntry = {
+  id: string
+  date: string
+  savedAt: number
+  // Raw per-shift values (multiplier is global, not stored per shift)
+  servicesRaw: number
+  hasBaseRate: boolean
+  baseRateRaw: number // 400 if hasBaseRate else 0
+  tradeEarnings: number
+  teaEarnings: number
+  // Legacy fields kept for backwards-compat with previously saved entries
+  multiplier?: number
+  finalServices?: number
+  baseRate?: number
+  trading?: number
+  total?: number
+}
+
+const DEFAULT_DRAFT: DraftRecord = {
+  servicesRaw: "",
+  hasBaseRate: false,
+  tradeEarnings: "",
+  teaEarnings: "",
+}
+
+const DRAFT_KEY = "techExpertEarnings"
+const HISTORY_KEY = "techExpertHistory"
+const MULTIPLIER_KEY = "techExpertMultiplier"
+const GOALS_KEY = "techExpertGoals" // monthly RAW services goal (per month key)
+const AUTO_MULT_KEY = "techExpertAutoMultiplier"
+
+const DEFAULT_GOAL = 50000
+
+// Map a forecast % (0..∞) to the auto-calculated multiplier per spec
+const autoMultiplierFor = (forecastPct: number): number => {
+  if (forecastPct < 81) return -0.2
+  if (forecastPct < 91) return -0.1
+  if (forecastPct < 110) return 0
+  if (forecastPct < 120) return 0.1
+  return 0.2
+}
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+]
+
+const monthKeyOf = (dateStr: string) => dateStr.slice(0, 7) // "YYYY-MM"
+
+// Helpers to read legacy entries safely
+const entryRawServices = (e: HistoryEntry) => Number(e.servicesRaw) || 0
+const entryRawBase = (e: HistoryEntry) =>
+  typeof e.baseRateRaw === "number" ? e.baseRateRaw : e.hasBaseRate ? 400 : 0
+const entryTrading = (e: HistoryEntry) =>
+  typeof e.tradeEarnings === "number" ? e.tradeEarnings : Number(e.trading) || 0
+const entryTea = (e: HistoryEntry) => Number(e.teaEarnings) || 0
+
+export default function TechExpertTracker() {
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split("T")[0])
+  const [drafts, setDrafts] = useState<Record<string, DraftRecord>>({})
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [globalMultiplier, setGlobalMultiplier] = useState(0)
+  const [goals, setGoals] = useState<Record<string, number>>({})
+  const [isLoaded, setIsLoaded] = useState(false)
+  const [justSaved, setJustSaved] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const [autoMultiplier, setAutoMultiplier] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Hydrate from localStorage
+  useEffect(() => {
+    try {
+      const savedDrafts = localStorage.getItem(DRAFT_KEY)
+      if (savedDrafts) setDrafts(JSON.parse(savedDrafts))
+      const savedHistory = localStorage.getItem(HISTORY_KEY)
+      if (savedHistory) setHistory(JSON.parse(savedHistory))
+      const savedMult = localStorage.getItem(MULTIPLIER_KEY)
+      if (savedMult !== null) {
+        const parsed = Number(savedMult)
+        if (!Number.isNaN(parsed)) setGlobalMultiplier(parsed)
+      }
+      const savedGoals = localStorage.getItem(GOALS_KEY)
+      if (savedGoals) setGoals(JSON.parse(savedGoals))
+      const savedAuto = localStorage.getItem(AUTO_MULT_KEY)
+      if (savedAuto !== null) setAutoMultiplier(savedAuto === "true")
+    } catch {
+      /* noop */
+    }
+    setIsLoaded(true)
+  }, [])
+
+  const currentRecord: DraftRecord = drafts[selectedDate] || DEFAULT_DRAFT
+
+  // Draft preview (today's pending shift) — also affected by global multiplier
+  const draftServicesRaw = Number(currentRecord.servicesRaw) || 0
+  const draftBaseRaw = currentRecord.hasBaseRate ? 400 : 0
+  const draftTrading = Number(currentRecord.tradeEarnings) || 0
+  const draftTea = Number(currentRecord.teaEarnings) || 0
+  const draftFinalServices = draftServicesRaw * 0.035 * (1 + globalMultiplier)
+  const draftFinalBase = draftBaseRaw * (1 + globalMultiplier)
+  const draftTotal = draftFinalServices + draftFinalBase + draftTrading + draftTea
+
+  // Selected month + cumulative totals from confirmed history
+  const selectedMonthKey = monthKeyOf(selectedDate)
+  const monthEntries = useMemo(
+    () => history.filter((e) => monthKeyOf(e.date) === selectedMonthKey),
+    [history, selectedMonthKey],
+  )
+
+  // Sum raw values from history; multiplier is applied dynamically here.
+  const monthRaw = useMemo(() => {
+    return monthEntries.reduce(
+      (acc, e) => {
+        acc.servicesRaw += entryRawServices(e)
+        acc.baseRaw += entryRawBase(e)
+        acc.trading += entryTrading(e)
+        acc.tea += entryTea(e)
+        return acc
+      },
+      { servicesRaw: 0, baseRaw: 0, trading: 0, tea: 0 },
+    )
+  }, [monthEntries])
+
+  const monthTotals = useMemo(() => {
+    const services = monthRaw.servicesRaw * 0.035 * (1 + globalMultiplier)
+    const base = monthRaw.baseRaw * (1 + globalMultiplier)
+    const trading = monthRaw.trading
+    const tea = monthRaw.tea
+    return { services, base, trading, tea, total: services + base + trading + tea }
+  }, [monthRaw, globalMultiplier])
+
+  // Previous month total (for trend indicator)
+  const prevMonthKey = useMemo(() => {
+    const [y, m] = selectedMonthKey.split("-").map(Number)
+    const d = new Date(y, m - 2, 1)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+  }, [selectedMonthKey])
+
+  const prevMonthTotal = useMemo(() => {
+    const raw = history
+      .filter((e) => monthKeyOf(e.date) === prevMonthKey)
+      .reduce(
+        (acc, e) => {
+          acc.servicesRaw += entryRawServices(e)
+          acc.baseRaw += entryRawBase(e)
+          acc.trading += entryTrading(e)
+          acc.tea += entryTea(e)
+          return acc
+        },
+        { servicesRaw: 0, baseRaw: 0, trading: 0, tea: 0 },
+      )
+    // Use the same global multiplier so the comparison is apples-to-apples on rates
+    return raw.servicesRaw * 0.035 * (1 + globalMultiplier) + raw.baseRaw * (1 + globalMultiplier) + raw.trading + raw.tea
+  }, [history, prevMonthKey, globalMultiplier])
+
+  const trendDeltaPct = prevMonthTotal > 0 ? ((monthTotals.total - prevMonthTotal) / prevMonthTotal) * 100 : null
+
+  // Monthly Services Goal (RAW services target)
+  const currentGoal = goals[selectedMonthKey] ?? DEFAULT_GOAL
+
+  // Progress = % of services goal reached so far (raw services accumulated this month)
+  const goalProgress = currentGoal > 0 ? Math.min(monthRaw.servicesRaw / currentGoal, 1) : 0
+  const goalPct = currentGoal > 0 ? Math.round((monthRaw.servicesRaw / currentGoal) * 100) : 0
+
+  // End-of-month forecast = (cumulative raw services / day-of-month) * days-in-month
+  const { forecastRawServices, forecastPct } = useMemo(() => {
+    const today = new Date()
+    const [y, m] = selectedMonthKey.split("-").map(Number)
+    const isCurrent = today.getFullYear() === y && today.getMonth() === m - 1
+    const isPast = new Date(y, m - 1, 1).getTime() < new Date(today.getFullYear(), today.getMonth(), 1).getTime()
+    const daysInMonth = new Date(y, m, 0).getDate()
+    // For past months, forecast == actual. For future months, no forecast.
+    const dayOfMonth = isCurrent ? today.getDate() : isPast ? daysInMonth : 1
+    const projected = isCurrent
+      ? (monthRaw.servicesRaw / Math.max(dayOfMonth, 1)) * daysInMonth
+      : isPast
+        ? monthRaw.servicesRaw
+        : 0
+    return {
+      forecastRawServices: projected,
+      forecastPct: currentGoal > 0 ? (projected / currentGoal) * 100 : 0,
+    }
+  }, [monthRaw.servicesRaw, currentGoal, selectedMonthKey])
+
+  const avgPerShift = monthEntries.length > 0 ? monthTotals.total / monthEntries.length : 0
+
+  const updateRecord = (field: keyof DraftRecord, value: any) => {
+    const next = {
+      ...drafts,
+      [selectedDate]: {
+        ...currentRecord,
+        [field]: value,
+      },
+    }
+    setDrafts(next)
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(next))
+  }
+
+  const updateGlobalMultiplier = (m: number) => {
+    if (autoMultiplier) return // locked when auto mode is on
+    setGlobalMultiplier(m)
+    localStorage.setItem(MULTIPLIER_KEY, String(m))
+  }
+
+  const updateServicesGoal = (next: number) => {
+    const safe = Math.max(0, Math.floor(next) || 0)
+    const nextGoals = { ...goals, [selectedMonthKey]: safe }
+    setGoals(nextGoals)
+    localStorage.setItem(GOALS_KEY, JSON.stringify(nextGoals))
+  }
+
+  const updateAutoMultiplier = (next: boolean) => {
+    setAutoMultiplier(next)
+    localStorage.setItem(AUTO_MULT_KEY, String(next))
+  }
+
+  // Auto-derive the global multiplier from the forecast when auto mode is ON
+  useEffect(() => {
+    if (!autoMultiplier) return
+    const target = autoMultiplierFor(forecastPct)
+    if (target !== globalMultiplier) {
+      setGlobalMultiplier(target)
+      localStorage.setItem(MULTIPLIER_KEY, String(target))
+    }
+  }, [autoMultiplier, forecastPct, globalMultiplier])
+
+  const confirmShift = () => {
+    if (draftTotal <= 0) return
+    const entry: HistoryEntry = {
+      id: `${selectedDate}-${Date.now()}`,
+      date: selectedDate,
+      savedAt: Date.now(),
+      servicesRaw: draftServicesRaw,
+      hasBaseRate: currentRecord.hasBaseRate,
+      baseRateRaw: draftBaseRaw,
+      tradeEarnings: Number(draftTrading.toFixed(2)),
+      teaEarnings: Number(draftTea.toFixed(2)),
+    }
+    const nextHistory = [entry, ...history]
+    setHistory(nextHistory)
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory))
+
+    // Clear the current day's draft inputs (Services, Base Rate, Trading, Tea)
+    const nextDrafts = { ...drafts, [selectedDate]: { ...DEFAULT_DRAFT } }
+    setDrafts(nextDrafts)
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(nextDrafts))
+
+    setJustSaved(true)
+    setTimeout(() => setJustSaved(false), 1800)
+  }
+
+  const deleteEntry = (id: string) => {
+    if (typeof window !== "undefined" && !window.confirm("Delete this shift? This cannot be undone.")) return
+    const nextHistory = history.filter((e) => e.id !== id)
+    setHistory(nextHistory)
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory))
+  }
+
+  const editEntry = (entry: HistoryEntry) => {
+    // Remove from history, populate the form for that date, switch selected date and close modal
+    const nextHistory = history.filter((e) => e.id !== entry.id)
+    setHistory(nextHistory)
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory))
+
+    const nextDrafts: Record<string, DraftRecord> = {
+      ...drafts,
+      [entry.date]: {
+        servicesRaw: entryRawServices(entry) || "",
+        hasBaseRate: !!entry.hasBaseRate || entryRawBase(entry) > 0,
+        tradeEarnings: entryTrading(entry) || "",
+        teaEarnings: entryTea(entry) || "",
+      },
+    }
+    setDrafts(nextDrafts)
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(nextDrafts))
+    setSelectedDate(entry.date)
+    setHistoryOpen(false)
+  }
+
+  const exportData = () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      app: "tech-expert-tracker",
+      version: 2,
+      multiplier: globalMultiplier,
+      autoMultiplier,
+      goals,
+      drafts,
+      history,
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `earnings-tracker-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const triggerImport = () => fileInputRef.current?.click()
+
+  const handleImportFile = async (file: File) => {
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text)
+      if (!data || typeof data !== "object") throw new Error("Not a valid JSON object")
+      if (!Array.isArray(data.history)) throw new Error("Missing 'history' array")
+      if (data.drafts && typeof data.drafts !== "object") throw new Error("Invalid 'drafts'")
+      if (data.goals && typeof data.goals !== "object") throw new Error("Invalid 'goals'")
+      // Light per-entry sanity check
+      for (const e of data.history) {
+        if (typeof e?.date !== "string" || typeof e?.id !== "string") {
+          throw new Error("History entries are malformed")
+        }
+      }
+
+      // Overwrite — both state (instant UI refresh) and localStorage
+      setHistory(data.history)
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(data.history))
+
+      const nextDrafts = data.drafts ?? {}
+      setDrafts(nextDrafts)
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(nextDrafts))
+
+      const nextGoals = data.goals ?? {}
+      setGoals(nextGoals)
+      localStorage.setItem(GOALS_KEY, JSON.stringify(nextGoals))
+
+      if (typeof data.multiplier === "number") {
+        setGlobalMultiplier(data.multiplier)
+        localStorage.setItem(MULTIPLIER_KEY, String(data.multiplier))
+      }
+      if (typeof data.autoMultiplier === "boolean") {
+        setAutoMultiplier(data.autoMultiplier)
+        localStorage.setItem(AUTO_MULT_KEY, String(data.autoMultiplier))
+      }
+
+      if (typeof window !== "undefined") {
+        window.alert("Data imported successfully.")
+      }
+    } catch (err) {
+      if (typeof window !== "undefined") {
+        window.alert(`Import failed: ${(err as Error).message}`)
+      }
+    }
+  }
+
+  // Pie chart data — monthly cumulative distribution (4 slices)
+  const chartData = useMemo(
+    () =>
+      [
+        { name: "Services", value: Number(monthTotals.services.toFixed(2)), color: SERVICES_COLOR },
+        { name: "Base Rate", value: Number(monthTotals.base.toFixed(2)), color: BASE_COLOR },
+        { name: "Trading", value: Number(monthTotals.trading.toFixed(2)), color: TRADING_COLOR },
+        { name: "Tea", value: Number(monthTotals.tea.toFixed(2)), color: TEA_COLOR },
+      ].filter((d) => d.value > 0),
+    [monthTotals],
+  )
+
+  if (!isLoaded) return null
+
+  const multiplierPct = Math.round(globalMultiplier * 100)
+  const multiplierTone =
+    multiplierPct > 0 ? "text-emerald-400" : multiplierPct < 0 ? "text-red-400" : "text-slate-200"
+
+  // Soft progress fractions for chips
+  const cumTotal = monthTotals.total
+  const fracServices = cumTotal > 0 ? Math.min(monthTotals.services / cumTotal, 1) : 0
+  const fracBase = cumTotal > 0 ? Math.min(monthTotals.base / cumTotal, 1) : 0
+  const fracTrade = cumTotal > 0 ? Math.min(monthTotals.trading / cumTotal, 1) : 0
+  const fracTea = cumTotal > 0 ? Math.min(monthTotals.tea / cumTotal, 1) : 0
+
+  const [selYear, selMonth] = selectedMonthKey.split("-").map(Number)
+  const selectedMonthLabel = `${MONTH_NAMES[selMonth - 1]} ${selYear}`
+
+  return (
+    <div className="min-h-screen text-slate-100 font-sans bg-fixed bg-[radial-gradient(ellipse_at_top,_#1e3a8a_0%,_#0b1226_45%,_#05080f_100%)]">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) handleImportFile(file)
+          // Reset so picking the same file twice still triggers onChange
+          e.target.value = ""
+        }}
+      />
+      <div className="mx-auto max-w-md px-4 pt-6 pb-24 sm:max-w-lg sm:px-5 sm:pt-8">
+        {/* Header */}
+        <header className="flex items-center justify-between mb-4 gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shadow-[0_0_20px_-4px_rgba(59,130,246,0.6)] shrink-0">
+              <Sparkles className="w-4 h-4 text-blue-300" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold text-white leading-tight truncate">Earnings Tracker</h1>
+              <p className="text-[11px] text-slate-400 leading-tight">Tech expert dashboard</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <label className="flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-white/5 backdrop-blur-md border border-white/10">
+              <Calendar className="w-4 h-4 text-blue-300 shrink-0" />
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="bg-transparent border-none outline-none text-xs font-medium text-slate-100 cursor-pointer w-[100px] [color-scheme:dark]"
+              />
+            </label>
+            <button
+              type="button"
+              aria-label="View history"
+              onClick={() => {
+                setHistoryMonth(selectedMonthKey)
+                setHistoryOpen(true)
+              }}
+              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 backdrop-blur-md border border-white/10 flex items-center justify-center transition-colors"
+            >
+              <HistoryIcon className="w-4 h-4 text-blue-300" />
+            </button>
+          </div>
+        </header>
+
+        {/* COMPACT HERO — Balance + Pie + Goal + Multiplier merged into ONE card */}
+        <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-600/20 via-blue-500/5 to-transparent backdrop-blur-xl border border-white/10 p-4 mb-4 shadow-[0_8px_40px_-12px_rgba(59,130,246,0.45)]">
+          <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full bg-blue-500/30 blur-3xl pointer-events-none" />
+
+          <div className="relative flex items-center justify-between mb-3 gap-2">
+            <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-blue-200/80 font-medium">
+              <Wallet className="w-3.5 h-3.5" />
+              Total Balance
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-200/70 px-2 py-0.5 rounded-full bg-blue-500/15 border border-blue-400/20">
+                {selectedMonthLabel}
+              </span>
+              <button
+                type="button"
+                aria-label="Open settings"
+                onClick={() => setSettingsOpen(true)}
+                className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+              >
+                <SettingsIcon className="w-3.5 h-3.5 text-blue-200" />
+              </button>
+            </div>
+          </div>
+
+          {/* Split: Donut on the left, Total + meta on the right */}
+          <div className="relative flex items-center gap-3">
+            <div className="w-[120px] h-[120px] sm:w-[140px] sm:h-[140px] shrink-0">
+              {chartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={chartData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius="62%"
+                      outerRadius="92%"
+                      paddingAngle={0}
+                      dataKey="value"
+                      stroke="none"
+                      cornerRadius={4}
+                    >
+                      {chartData.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(value: number, name: string) => [`${value.toFixed(2)} UAH`, name]}
+                      contentStyle={{
+                        borderRadius: "12px",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        background: "rgba(15,23,42,0.95)",
+                        color: "#f1f5f9",
+                        backdropFilter: "blur(8px)",
+                        fontSize: 12,
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="w-full h-full rounded-full border-2 border-dashed border-white/10 flex items-center justify-center text-[10px] text-slate-500 text-center px-2">
+                  No shifts yet
+                </div>
+              )}
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-1.5 flex-wrap">
+                <span className="text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight leading-none">
+                  {monthTotals.total.toFixed(2)}
+                </span>
+                <span className="text-xs font-semibold text-blue-200/70">UAH</span>
+              </div>
+
+              {/* Trend pill: this month vs previous month */}
+              <div className="mt-2">
+                {trendDeltaPct === null ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-medium text-slate-400">
+                    <Minus className="w-3 h-3" />
+                    No prior month
+                  </span>
+                ) : trendDeltaPct >= 0 ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[10px] font-semibold text-emerald-300">
+                    <TrendingUp className="w-3 h-3" />
+                    {`+${trendDeltaPct.toFixed(1)}% vs last month`}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 border border-red-400/30 text-[10px] font-semibold text-red-300">
+                    <TrendingDown className="w-3 h-3" />
+                    {`${trendDeltaPct.toFixed(1)}% vs last month`}
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-300/80 flex-wrap">
+                <span>
+                  {monthEntries.length} {monthEntries.length === 1 ? "shift" : "shifts"}
+                </span>
+                {monthEntries.length > 0 && (
+                  <>
+                    <span className="text-slate-600">·</span>
+                    <span className="text-slate-400">avg</span>
+                    <span className="font-semibold text-slate-200 tabular-nums">{avgPerShift.toFixed(0)}</span>
+                  </>
+                )}
+                <span className="text-slate-600">·</span>
+                <span className={`font-bold ${multiplierTone}`}>
+                  {multiplierPct > 0 ? "+" : ""}
+                  {multiplierPct}%
+                </span>
+                {autoMultiplier && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-300/90 px-1.5 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30">
+                    AUTO
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* MONTHLY SERVICES GOAL — thin progress bar with forecast tick */}
+          <div className="relative mt-4">
+            <div className="flex items-center justify-between mb-1.5 gap-2">
+              <div className="flex items-center gap-1.5 text-[11px] text-slate-300/90 min-w-0">
+                <Target className="w-3 h-3 text-blue-300 shrink-0" />
+                <span className="font-medium">{goalPct}% of services goal</span>
+              </div>
+              {forecastPct > 0 && (
+                <div className="flex items-center gap-1 text-[11px] text-slate-300/90">
+                  <span className="text-slate-500">Forecast</span>
+                  <span
+                    className={`font-bold tabular-nums ${
+                      forecastPct >= 110
+                        ? "text-emerald-300"
+                        : forecastPct >= 91
+                          ? "text-blue-200"
+                          : forecastPct >= 81
+                            ? "text-amber-300"
+                            : "text-red-300"
+                    }`}
+                  >
+                    {Math.round(forecastPct)}%
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="relative h-1.5 w-full rounded-full bg-white/5 overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.max(goalProgress * 100, monthRaw.servicesRaw > 0 ? 2 : 0)}%`,
+                  background: "linear-gradient(90deg, #3b82f6 0%, #22c55e 100%)",
+                  boxShadow: "0 0 12px rgba(59,130,246,0.55)",
+                }}
+              />
+              {forecastPct > 0 && (
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/80 rounded-full shadow-[0_0_6px_rgba(255,255,255,0.9)] pointer-events-none"
+                  style={{ left: `calc(${Math.min(forecastPct, 100)}% - 1px)` }}
+                  aria-label={`End-of-month forecast tick at ${Math.round(forecastPct)}%`}
+                />
+              )}
+            </div>
+            <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500 tabular-nums">
+              <span>
+                {Math.round(monthRaw.servicesRaw).toLocaleString("en-US")} /{" "}
+                {currentGoal.toLocaleString("en-US")} UAH raw
+              </span>
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="text-blue-300/80 hover:text-blue-200 transition-colors"
+              >
+                Edit goal
+              </button>
+            </div>
+          </div>
+
+          {/* GLOBAL MULTIPLIER */}
+          <div className="relative mt-4 pt-3 border-t border-white/10">
+            <div className="flex items-center justify-between mb-1.5 gap-2">
+              <label className="text-[11px] font-medium text-slate-300 flex items-center gap-1">
+                <Percent className="w-3 h-3" />
+                Monthly multiplier
+              </label>
+              {autoMultiplier ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-300 px-1.5 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30">
+                  <Lock className="w-2.5 h-2.5" />
+                  Auto from forecast
+                </span>
+              ) : (
+                <span className="text-[10px] text-slate-500">applies to Services &amp; Base Rate</span>
+              )}
+            </div>
+            <div className={`grid grid-cols-5 gap-1.5 ${autoMultiplier ? "opacity-70" : ""}`}>
+              {MULTIPLIERS.map((m) => {
+                const label = m > 0 ? `+${m * 100}%` : m === 0 ? "0%" : `${m * 100}%`
+                const isActive = globalMultiplier === m
+                const tone =
+                  m > 0
+                    ? "shadow-[0_0_18px_-4px_rgba(34,197,94,0.7)] bg-emerald-500/90 text-white"
+                    : m < 0
+                      ? "shadow-[0_0_18px_-4px_rgba(239,68,68,0.7)] bg-red-500/90 text-white"
+                      : "shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)] bg-blue-500/90 text-white"
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => updateGlobalMultiplier(m)}
+                    disabled={autoMultiplier}
+                    aria-disabled={autoMultiplier}
+                    className={`py-2 rounded-xl text-xs font-semibold transition-all ${
+                      isActive ? tone : "bg-white/5 text-slate-300 border border-white/10 hover:bg-white/10"
+                    } ${autoMultiplier ? "cursor-not-allowed" : ""}`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </section>
+
+        {/* Metric chips: 4 categories — 2x2 on mobile, 4-col on larger screens */}
+        <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
+          <MetricChip
+            label="Services"
+            value={monthTotals.services}
+            color={SERVICES_COLOR}
+            fraction={fracServices}
+            icon={<Briefcase className="w-3.5 h-3.5" />}
+          />
+          <MetricChip
+            label="Base Rate"
+            value={monthTotals.base}
+            color={BASE_COLOR}
+            fraction={fracBase}
+            icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+          />
+          <MetricChip
+            label="Trading"
+            value={monthTotals.trading}
+            color={TRADING_COLOR}
+            fraction={fracTrade}
+            icon={<Coins className="w-3.5 h-3.5" />}
+          />
+          <MetricChip
+            label="Tea"
+            value={monthTotals.tea}
+            color={TEA_COLOR}
+            fraction={fracTea}
+            icon={<Coffee className="w-3.5 h-3.5" />}
+          />
+        </section>
+
+        {/* Input Form — operates on the SELECTED DATE draft */}
+        <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4 mb-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Briefcase className="w-4 h-4 text-blue-300" />
+              Shift Details
+            </h2>
+            <span className="text-[11px] text-slate-400 tabular-nums">
+              Today: {draftTotal.toFixed(2)} UAH
+            </span>
+          </div>
+
+          {/* Services input */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-slate-400">
+              Total services amount <span className="text-slate-500">(× 3.5%)</span>
+            </label>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={currentRecord.servicesRaw}
+              onChange={(e) => updateRecord("servicesRaw", e.target.value)}
+              placeholder="0"
+              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
+            />
+          </div>
+
+          {/* Base rate toggle */}
+          <button
+            type="button"
+            onClick={() => updateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
+            className={`w-full flex items-center justify-between p-3.5 rounded-2xl border transition-all ${
+              currentRecord.hasBaseRate
+                ? "bg-emerald-500/10 border-emerald-400/30 shadow-[0_0_24px_-8px_rgba(34,197,94,0.6)]"
+                : "bg-white/5 border-white/10"
+            }`}
+          >
+            <div className="flex flex-col items-start">
+              <span className="text-sm font-medium text-white">Shift Base Rate</span>
+              <span className="text-[11px] text-slate-400">Adds +400 UAH (multiplier applies)</span>
+            </div>
+            <div
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                currentRecord.hasBaseRate ? "bg-emerald-500" : "bg-slate-700"
+              }`}
+            >
+              <span
+                className={`absolute top-[2px] left-[2px] w-5 h-5 rounded-full bg-white transition-transform ${
+                  currentRecord.hasBaseRate ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </div>
+          </button>
+
+          {/* Trading + Tea inputs side-by-side on mobile too */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
+                <Coins className="w-3 h-3" style={{ color: TRADING_COLOR }} />
+                Trading
+              </label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={currentRecord.tradeEarnings}
+                onChange={(e) => updateRecord("tradeEarnings", e.target.value)}
+                placeholder="0"
+                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
+                <Coffee className="w-3 h-3" style={{ color: TEA_COLOR }} />
+                Tea (Tips)
+              </label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={currentRecord.teaEarnings}
+                onChange={(e) => updateRecord("teaEarnings", e.target.value)}
+                placeholder="0"
+                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
+              />
+            </div>
+          </div>
+
+          {/* Confirm Shift */}
+          <button
+            onClick={confirmShift}
+            disabled={draftTotal <= 0}
+            className={`relative w-full py-4 rounded-2xl font-semibold text-base transition-all flex items-center justify-center gap-2 ${
+              draftTotal > 0
+                ? "bg-blue-500 hover:bg-blue-400 text-white shadow-[0_0_30px_-4px_rgba(59,130,246,0.7),0_8px_24px_-8px_rgba(59,130,246,0.6)] active:scale-[0.98]"
+                : "bg-slate-800 text-slate-600 cursor-not-allowed"
+            }`}
+          >
+            {justSaved ? (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                Shift Saved
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                Confirm Shift
+              </>
+            )}
+          </button>
+        </section>
+
+        {/* Recent History (this month) */}
+        <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <HistoryIcon className="w-4 h-4 text-blue-300" />
+              This Month
+            </h2>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryMonth(selectedMonthKey)
+                setHistoryOpen(true)
+              }}
+              className="text-[11px] font-medium text-blue-300 hover:text-blue-200 transition-colors"
+            >
+              View all
+            </button>
+          </div>
+
+          {monthEntries.length === 0 ? (
+            <div className="py-8 text-center text-slate-500 text-sm">
+              No confirmed shifts yet. Save your first shift to see it here.
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {monthEntries.slice(0, 5).map((entry) => {
+                const s = entryRawServices(entry) * 0.035 * (1 + globalMultiplier)
+                const b = entryRawBase(entry) * (1 + globalMultiplier)
+                const t = entryTrading(entry)
+                const tea = entryTea(entry)
+                const total = s + b + t + tea
+                return (
+                  <li
+                    key={entry.id}
+                    className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5 hover:bg-white/[0.06] transition-colors"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-white">
+                        {new Date(entry.date).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 flex-wrap">
+                        <span style={{ color: SERVICES_COLOR }}>S {s.toFixed(0)}</span>
+                        <span className="text-slate-600">·</span>
+                        <span style={{ color: BASE_COLOR }}>B {b.toFixed(0)}</span>
+                        <span className="text-slate-600">·</span>
+                        <span style={{ color: TRADING_COLOR }}>T {t.toFixed(0)}</span>
+                        {tea > 0 && (
+                          <>
+                            <span className="text-slate-600">·</span>
+                            <span style={{ color: TEA_COLOR }}>Te {tea.toFixed(0)}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 ml-3">
+                      <div className="text-base font-bold text-white tabular-nums">{total.toFixed(2)}</div>
+                      <div className="text-[10px] text-slate-500">UAH</div>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+      </div>
+
+      {historyOpen && (
+        <HistoryModal
+          history={history}
+          monthKey={historyMonth}
+          globalMultiplier={globalMultiplier}
+          onChangeMonth={setHistoryMonth}
+          onClose={() => setHistoryOpen(false)}
+          onDelete={deleteEntry}
+          onEdit={editEntry}
+          onExport={exportData}
+          onImport={triggerImport}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsModal
+          monthLabel={selectedMonthLabel}
+          servicesGoal={currentGoal}
+          onSaveGoal={updateServicesGoal}
+          autoMultiplier={autoMultiplier}
+          onToggleAutoMultiplier={updateAutoMultiplier}
+          forecastPct={forecastPct}
+          onClose={() => setSettingsOpen(false)}
+          onExport={exportData}
+          onImport={triggerImport}
+        />
+      )}
+    </div>
+  )
+}
+
+function MetricChip({
+  label,
+  value,
+  color,
+  fraction,
+  icon,
+}: {
+  label: string
+  value: number
+  color: string
+  fraction: number
+  icon: React.ReactNode
+}) {
+  return (
+    <div className="rounded-2xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-3">
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-medium" style={{ color }}>
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="mt-1.5 text-base font-bold text-white tabular-nums leading-none">
+        {value.toFixed(0)}
+        <span className="text-[10px] font-medium text-slate-500 ml-1">UAH</span>
+      </div>
+      <div className="mt-2 h-1 w-full rounded-full bg-white/5 overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{
+            width: `${Math.max(fraction * 100, value > 0 ? 6 : 0)}%`,
+            background: color,
+            boxShadow: `0 0 10px ${color}`,
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function HistoryModal({
+  history,
+  monthKey,
+  globalMultiplier,
+  onChangeMonth,
+  onClose,
+  onDelete,
+  onEdit,
+  onExport,
+  onImport,
+}: {
+  history: HistoryEntry[]
+  monthKey: string
+  globalMultiplier: number
+  onChangeMonth: (m: string) => void
+  onClose: () => void
+  onDelete: (id: string) => void
+  onEdit: (entry: HistoryEntry) => void
+  onExport: () => void
+  onImport: () => void
+}) {
+  const [year, month] = monthKey.split("-").map(Number)
+  const label = `${MONTH_NAMES[month - 1]} ${year}`
+
+  const shiftMonth = (delta: number) => {
+    const d = new Date(year, month - 1 + delta, 1)
+    const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+    onChangeMonth(next)
+  }
+
+  const entries = useMemo(
+    () =>
+      history
+        .filter((e) => monthKeyOf(e.date) === monthKey)
+        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.savedAt - a.savedAt)),
+    [history, monthKey],
+  )
+
+  const totals = useMemo(() => {
+    const raw = entries.reduce(
+      (acc, e) => {
+        acc.servicesRaw += entryRawServices(e)
+        acc.baseRaw += entryRawBase(e)
+        acc.trading += entryTrading(e)
+        acc.tea += entryTea(e)
+        return acc
+      },
+      { servicesRaw: 0, baseRaw: 0, trading: 0, tea: 0 },
+    )
+    const services = raw.servicesRaw * 0.035 * (1 + globalMultiplier)
+    const base = raw.baseRaw * (1 + globalMultiplier)
+    return {
+      services,
+      base,
+      trading: raw.trading,
+      tea: raw.tea,
+      total: services + base + raw.trading + raw.tea,
+    }
+  }, [entries, globalMultiplier])
+
+  const avg = entries.length > 0 ? totals.total / entries.length : 0
+
+  // Available months from history (descending)
+  const availableMonths = useMemo(() => {
+    const set = new Set<string>()
+    history.forEach((e) => set.add(monthKeyOf(e.date)))
+    set.add(monthKey)
+    set.add(new Date().toISOString().slice(0, 7))
+    return Array.from(set).sort((a, b) => (a < b ? 1 : -1))
+  }, [history, monthKey])
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full sm:max-w-lg max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shrink-0">
+              <HistoryIcon className="w-4 h-4 text-blue-300" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-white truncate">Shift History</h3>
+              <p className="text-[11px] text-slate-400 truncate">Edit, delete, or export your data</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              aria-label="Import data"
+              onClick={onImport}
+              className="h-8 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-1.5 text-[11px] font-semibold text-slate-200 transition-colors"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Import
+            </button>
+            <button
+              type="button"
+              aria-label="Export data"
+              onClick={onExport}
+              className="h-8 px-2.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-400/30 flex items-center gap-1.5 text-[11px] font-semibold text-blue-200 transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export
+            </button>
+            <button
+              type="button"
+              aria-label="Close history"
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+            >
+              <X className="w-4 h-4 text-slate-300" />
+            </button>
+          </div>
+        </div>
+
+        {/* Month selector */}
+        <div className="p-4 border-b border-white/10 shrink-0 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              aria-label="Previous month"
+              onClick={() => shiftMonth(-1)}
+              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4 text-slate-300" />
+            </button>
+            <select
+              value={monthKey}
+              onChange={(e) => onChangeMonth(e.target.value)}
+              className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-sm font-semibold text-white text-center outline-none [color-scheme:dark]"
+            >
+              {availableMonths.map((m) => {
+                const [y, mm] = m.split("-").map(Number)
+                return (
+                  <option key={m} value={m} className="bg-[#0b1226]">
+                    {MONTH_NAMES[mm - 1]} {y}
+                  </option>
+                )
+              })}
+            </select>
+            <button
+              type="button"
+              aria-label="Next month"
+              onClick={() => shiftMonth(1)}
+              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+            >
+              <ChevronRight className="w-4 h-4 text-slate-300" />
+            </button>
+          </div>
+
+          {/* Month summary */}
+          <div className="rounded-2xl bg-gradient-to-br from-blue-600/15 to-transparent border border-white/10 p-3">
+            <div className="text-[11px] uppercase tracking-wider text-blue-200/80 font-medium flex items-center gap-1.5 flex-wrap">
+              <span>{label}</span>
+              <span className="text-slate-600">·</span>
+              <span>
+                {entries.length} {entries.length === 1 ? "shift" : "shifts"}
+              </span>
+              {entries.length > 0 && (
+                <>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-400 normal-case tracking-normal">
+                    avg <span className="font-semibold text-slate-200 tabular-nums">{avg.toFixed(0)}</span>
+                  </span>
+                </>
+              )}
+            </div>
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-white tabular-nums">{totals.total.toFixed(2)}</span>
+              <span className="text-xs font-semibold text-blue-200/70">UAH</span>
+            </div>
+            <div className="mt-2 grid grid-cols-4 gap-2 text-[11px]">
+              <div>
+                <div className="text-slate-400">Services</div>
+                <div className="font-bold tabular-nums" style={{ color: SERVICES_COLOR }}>
+                  {totals.services.toFixed(0)}
+                </div>
+              </div>
+              <div>
+                <div className="text-slate-400">Base</div>
+                <div className="font-bold tabular-nums" style={{ color: BASE_COLOR }}>
+                  {totals.base.toFixed(0)}
+                </div>
+              </div>
+              <div>
+                <div className="text-slate-400">Trading</div>
+                <div className="font-bold tabular-nums" style={{ color: TRADING_COLOR }}>
+                  {totals.trading.toFixed(0)}
+                </div>
+              </div>
+              <div>
+                <div className="text-slate-400">Tea</div>
+                <div className="font-bold tabular-nums" style={{ color: TEA_COLOR }}>
+                  {totals.tea.toFixed(0)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Entries list */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {entries.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 text-sm">No shifts in {label}.</div>
+          ) : (
+            <ul className="space-y-2">
+              {entries.map((entry) => {
+                const s = entryRawServices(entry) * 0.035 * (1 + globalMultiplier)
+                const b = entryRawBase(entry) * (1 + globalMultiplier)
+                const t = entryTrading(entry)
+                const tea = entryTea(entry)
+                const total = s + b + t + tea
+                return (
+                  <li
+                    key={entry.id}
+                    className="flex items-center justify-between gap-2 p-3 rounded-2xl bg-white/[0.03] border border-white/5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-white">
+                        {new Date(entry.date).toLocaleDateString("en-US", {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 flex-wrap">
+                        <span style={{ color: SERVICES_COLOR }}>S {s.toFixed(0)}</span>
+                        <span className="text-slate-600">·</span>
+                        <span style={{ color: BASE_COLOR }}>B {b.toFixed(0)}</span>
+                        <span className="text-slate-600">·</span>
+                        <span style={{ color: TRADING_COLOR }}>T {t.toFixed(0)}</span>
+                        {tea > 0 && (
+                          <>
+                            <span className="text-slate-600">·</span>
+                            <span style={{ color: TEA_COLOR }}>Te {tea.toFixed(0)}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-base font-bold text-white tabular-nums leading-none">
+                        {total.toFixed(2)}
+                      </div>
+                      <div className="text-[10px] text-slate-500">UAH</div>
+                    </div>
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <button
+                        type="button"
+                        aria-label="Edit shift"
+                        onClick={() => onEdit(entry)}
+                        className="w-7 h-7 rounded-lg bg-blue-500/15 hover:bg-blue-500/30 border border-blue-400/30 flex items-center justify-center transition-colors"
+                      >
+                        <Pencil className="w-3 h-3 text-blue-200" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Delete shift"
+                        onClick={() => onDelete(entry.id)}
+                        className="w-7 h-7 rounded-lg bg-red-500/15 hover:bg-red-500/30 border border-red-400/30 flex items-center justify-center transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3 text-red-300" />
+                      </button>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SettingsModal({
+  monthLabel,
+  servicesGoal,
+  onSaveGoal,
+  autoMultiplier,
+  onToggleAutoMultiplier,
+  forecastPct,
+  onClose,
+  onExport,
+  onImport,
+}: {
+  monthLabel: string
+  servicesGoal: number
+  onSaveGoal: (next: number) => void
+  autoMultiplier: boolean
+  onToggleAutoMultiplier: (next: boolean) => void
+  forecastPct: number
+  onClose: () => void
+  onExport: () => void
+  onImport: () => void
+}) {
+  const [goalInput, setGoalInput] = useState(String(servicesGoal))
+
+  // Keep input in sync if month/goal changes externally while modal is open
+  useEffect(() => {
+    setGoalInput(String(servicesGoal))
+  }, [servicesGoal])
+
+  const commitGoal = () => {
+    const n = Math.max(0, Number(goalInput) || 0)
+    onSaveGoal(n)
+  }
+
+  const projectedMultPct = Math.round(autoMultiplierFor(forecastPct) * 100)
+  const projectedTone =
+    projectedMultPct > 0 ? "text-emerald-300" : projectedMultPct < 0 ? "text-red-300" : "text-blue-200"
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full sm:max-w-md max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shrink-0">
+              <SettingsIcon className="w-4 h-4 text-blue-300" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-white truncate">Settings</h3>
+              <p className="text-[11px] text-slate-400 truncate">{monthLabel}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close settings"
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+          >
+            <X className="w-4 h-4 text-slate-300" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto p-4 space-y-5">
+          {/* Monthly Services Goal */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Target className="w-4 h-4 text-blue-300" />
+              <label htmlFor="services-goal" className="text-sm font-semibold text-white">
+                Monthly Services Goal
+              </label>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Target amount of <span className="text-slate-200 font-medium">raw services</span> for the month
+              (in UAH, before the 3.5% rate). Drives the dashboard progress bar and the forecasted multiplier.
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                id="services-goal"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                value={goalInput}
+                onChange={(e) => setGoalInput(e.target.value)}
+                onBlur={commitGoal}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    commitGoal()
+                    ;(e.target as HTMLInputElement).blur()
+                  }
+                }}
+                className="flex-1 px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white tabular-nums placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
+                placeholder="50000"
+              />
+              <span className="text-xs font-semibold text-slate-400">UAH</span>
+            </div>
+          </div>
+
+          {/* Auto-multiplier toggle */}
+          <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-3.5 space-y-3">
+            <button
+              type="button"
+              onClick={() => onToggleAutoMultiplier(!autoMultiplier)}
+              className="w-full flex items-center justify-between gap-3"
+              aria-pressed={autoMultiplier}
+            >
+              <div className="flex flex-col items-start text-left min-w-0">
+                <span className="text-sm font-semibold text-white flex items-center gap-1.5">
+                  <Percent className="w-3.5 h-3.5 text-blue-300" />
+                  Auto-calculate Multiplier
+                </span>
+                <span className="text-[11px] text-slate-400 leading-snug">
+                  Locks the multiplier to a value derived from the forecasted % of your services goal.
+                </span>
+              </div>
+              <div
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
+                  autoMultiplier ? "bg-blue-500" : "bg-slate-700"
+                }`}
+              >
+                <span
+                  className={`absolute top-[2px] left-[2px] w-5 h-5 rounded-full bg-white transition-transform ${
+                    autoMultiplier ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </div>
+            </button>
+
+            {autoMultiplier && (
+              <div className="rounded-xl bg-blue-500/10 border border-blue-400/20 p-2.5 text-[11px] text-slate-300 leading-relaxed">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-slate-400">Forecast</span>
+                  <span className="font-bold tabular-nums text-blue-200">{Math.round(forecastPct)}%</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Auto multiplier</span>
+                  <span className={`font-bold tabular-nums ${projectedTone}`}>
+                    {projectedMultPct > 0 ? "+" : ""}
+                    {projectedMultPct}%
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="text-[10px] text-slate-500 leading-relaxed">
+              Bands: &lt;81% → -20%, 81–90% → -10%, 91–109% → 0%, 110–119% → +10%, ≥120% → +20%.
+            </div>
+          </div>
+
+          {/* Data management */}
+          <div className="space-y-2">
+            <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Data</div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={onImport}
+                className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 transition-colors"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                Import JSON
+              </button>
+              <button
+                type="button"
+                onClick={onExport}
+                className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl bg-blue-500/15 hover:bg-blue-500/25 border border-blue-400/30 text-xs font-semibold text-blue-200 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export JSON
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
