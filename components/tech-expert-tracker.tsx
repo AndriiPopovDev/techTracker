@@ -100,13 +100,22 @@ const MONTH_NAMES = [
 
 const monthKeyOf = (dateStr: string) => dateStr.slice(0, 7) // "YYYY-MM"
 
+// Cyan accent reserved for the positive-multiplier "bonus" tail.
+// Distinct from the standard "Base Rate" green so the two are never confused.
+const BONUS_COLOR = "#06b6d4" // cyan-500 / biryuza
+const BONUS_GLOW = "#67e8f9" // cyan-300 — used for halo accents
+
+// Format an integer UAH amount with a thin space as the thousands separator,
+// matching the visual style requested in the spec ("12 000 UAH (+2 000)").
+const fmtUah = (n: number) => Math.round(n).toLocaleString("en-US").replace(/,/g, "\u202f")
+
 // External label renderer for the donut. Draws a polyline (leader line) from the
 // outer edge of each slice to a label sitting outside the ring. The label shows
-// the absolute UAH amount and the segment name, color-matched to the slice.
-// Auxiliary slices used purely to visualize the multiplier delta on Services
-// (the green "bonus" tail and the red striped "loss" tail) are flagged with
-// `hideLabel` so they don't get their own external label — their effect is
-// surfaced via the suffix appended to the parent Services label.
+// the FINAL UAH amount and — for slices that carry a multiplier delta — an
+// inline "(±delta)" suffix colored cyan for bonuses and red for penalties.
+// Auxiliary slices that only exist to visualize the multiplier tail (cyan
+// "bonus" arc, red striped "loss" arc) are flagged with `hideLabel` so they
+// don't get their own external label.
 const renderExternalDonutLabel = (props: any) => {
   const { cx, cy, midAngle, outerRadius, payload, value } = props
   if (!payload || payload.hideLabel) return null
@@ -121,13 +130,20 @@ const renderExternalDonutLabel = (props: any) => {
   const mx = cx + (outerRadius + 10) * cos
   const my = cy + (outerRadius + 10) * sin
   const onRight = cos >= 0
-  const ex = mx + (onRight ? 1 : -1) * 16
+  const ex = mx + (onRight ? 1 : -1) * 18
   const ey = my
   const tx = ex + (onRight ? 4 : -4)
   const textAnchor = onRight ? "start" : "end"
   const color = payload.color || "#cbd5e1"
-  const suffix = payload.suffix || ""
-  const suffixColor = payload.suffixColor || "rgba(203,213,225,0.7)"
+
+  // Prefer payload.displayValue (e.g. the multiplied final for Services/Base
+  // Rate) over the raw arc value, which is just the geometric size of the
+  // base portion when a delta tail is present.
+  const displayValue: number = typeof payload.displayValue === "number" ? payload.displayValue : Number(value)
+  const delta: number | undefined = typeof payload.delta === "number" ? payload.delta : undefined
+  const deltaSuffix =
+    delta !== undefined && delta !== 0 ? `(${delta > 0 ? "+" : "-"}${fmtUah(Math.abs(delta))})` : ""
+  const deltaColor = delta !== undefined && delta < 0 ? "#f87171" : BONUS_COLOR
 
   return (
     <g>
@@ -145,10 +161,10 @@ const renderExternalDonutLabel = (props: any) => {
         textAnchor={textAnchor}
         style={{ fontSize: 11, fontWeight: 700, fill: color, letterSpacing: 0.2 }}
       >
-        <tspan>{`${Number(value).toFixed(0)} UAH`}</tspan>
-        {suffix ? (
-          <tspan dx={4} style={{ fontSize: 9, fontWeight: 700, fill: suffixColor }}>
-            {suffix}
+        <tspan>{`${fmtUah(displayValue)} UAH`}</tspan>
+        {deltaSuffix ? (
+          <tspan dx={4} style={{ fontSize: 10, fontWeight: 700, fill: deltaColor }}>
+            {deltaSuffix}
           </tspan>
         ) : null}
       </text>
@@ -466,96 +482,101 @@ export default function TechExpertTracker() {
     }
   }
 
-  // Pie chart data — monthly cumulative distribution. Services is decomposed to
-  // visually surface the global multiplier:
-  //   - Positive m: Services slice = blue "kept" base + glowing green "bonus" tail
-  //   - Negative m: Services slice = blue "kept" amount + red striped "lost" tail
-  // monthTotals.services already has the multiplier baked in (raw * (1 + m)).
+  // Pie chart data — monthly cumulative distribution. Services AND Base Rate
+  // are both affected by the global multiplier, so each is decomposed to make
+  // the multiplier impact visible:
+  //   - Positive m: parent slice = "kept" base + glowing CYAN "bonus" tail
+  //   - Negative m: parent slice = full final amount + red striped "loss" tail
+  // monthTotals.services / monthTotals.base already have the multiplier baked
+  // in (raw * (1 + m)). The label shows the final UAH amount and a signed
+  // delta in cyan (+) or red (-) right next to it.
   const chartData = useMemo(() => {
     const m = globalMultiplier
-    const services = monthTotals.services
-    const base = monthTotals.base
-    const trading = monthTotals.trading
-    const tea = monthTotals.tea
 
     type Slice = {
       name: string
       value: number
       color: string
-      kind?: "services" | "bonus" | "loss" | "base" | "trading" | "tea"
       hideLabel?: boolean
-      suffix?: string
-      suffixColor?: string
+      displayValue?: number
+      delta?: number
       fillOverride?: string
       filterOverride?: string
     }
 
     const data: Slice[] = []
-    const mPctLabel = `${m > 0 ? "+" : ""}${Math.round(m * 100)}%`
 
-    if (services > 0) {
+    const pushMultipliedSegment = (name: string, finalAmount: number, color: string) => {
+      if (finalAmount <= 0) return
       if (m > 0) {
-        // Split into base (raw) blue + bonus green
-        const base0 = services / (1 + m)
-        const bonus = services - base0
+        const base0 = finalAmount / (1 + m)
+        const bonus = finalAmount - base0
         data.push({
-          name: "Services",
+          name,
           value: Number(base0.toFixed(2)),
-          color: SERVICES_COLOR,
-          kind: "services",
-          suffix: `(${mPctLabel})`,
-          suffixColor: "#22c55e",
+          color,
+          // Show the FINAL value as the headline number, with the bonus as suffix
+          displayValue: finalAmount,
+          delta: bonus,
         })
         if (bonus > 0) {
           data.push({
-            name: "Services Bonus",
+            name: `${name} Bonus`,
             value: Number(bonus.toFixed(2)),
-            color: "#22c55e",
-            kind: "bonus",
+            color: BONUS_COLOR,
             hideLabel: true,
             filterOverride: "url(#bonusGlow)",
           })
         }
       } else if (m < 0) {
-        // Services arc shows the kept amount in blue, then a red striped "loss"
-        // tail equal to the would-have-been bonus that was sacrificed.
-        const lost = (services * -m) / (1 + m)
+        // Final amount is the kept value; draw a "phantom" striped tail equal
+        // to the would-have-been earnings that were sacrificed by the negative
+        // multiplier. The tail is purely visual — it doesn't change the total.
+        const lost = (finalAmount * -m) / (1 + m)
         data.push({
-          name: "Services",
-          value: Number(services.toFixed(2)),
-          color: SERVICES_COLOR,
-          kind: "services",
-          suffix: `(${mPctLabel})`,
-          suffixColor: "#f87171",
+          name,
+          value: Number(finalAmount.toFixed(2)),
+          color,
+          displayValue: finalAmount,
+          delta: -lost,
         })
         if (lost > 0) {
           data.push({
-            name: "Services Loss",
+            name: `${name} Loss`,
             value: Number(lost.toFixed(2)),
             color: "#ef4444",
-            kind: "loss",
             hideLabel: true,
             fillOverride: "url(#lossStripes)",
           })
         }
       } else {
         data.push({
-          name: "Services",
-          value: Number(services.toFixed(2)),
-          color: SERVICES_COLOR,
-          kind: "services",
+          name,
+          value: Number(finalAmount.toFixed(2)),
+          color,
+          displayValue: finalAmount,
         })
       }
     }
 
-    if (base > 0) {
-      data.push({ name: "Base Rate", value: Number(base.toFixed(2)), color: BASE_COLOR, kind: "base" })
+    pushMultipliedSegment("Services", monthTotals.services, SERVICES_COLOR)
+    pushMultipliedSegment("Base Rate", monthTotals.base, BASE_COLOR)
+
+    if (monthTotals.trading > 0) {
+      data.push({
+        name: "Trading",
+        value: Number(monthTotals.trading.toFixed(2)),
+        color: TRADING_COLOR,
+        displayValue: monthTotals.trading,
+      })
     }
-    if (trading > 0) {
-      data.push({ name: "Trading", value: Number(trading.toFixed(2)), color: TRADING_COLOR, kind: "trading" })
-    }
-    if (tea > 0) {
-      data.push({ name: "Tea", value: Number(tea.toFixed(2)), color: TEA_COLOR, kind: "tea" })
+    if (monthTotals.tea > 0) {
+      data.push({
+        name: "Tea",
+        value: Number(monthTotals.tea.toFixed(2)),
+        color: TEA_COLOR,
+        displayValue: monthTotals.tea,
+      })
     }
 
     return data
@@ -652,11 +673,11 @@ export default function TechExpertTracker() {
           </div>
 
           {/* Donut chart with external labels + Total Balance overlaid in the center */}
-          <div className="relative">
-            <div className="w-full h-[240px] sm:h-[260px]">
+          <div>
+            <div className="relative w-full h-[240px] sm:h-[260px]">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <PieChart margin={{ top: 16, right: 64, bottom: 16, left: 64 }}>
+                  <PieChart margin={{ top: 16, right: 72, bottom: 16, left: 72 }}>
                     <defs>
                       {/* Diagonal striped fill used for the negative-multiplier "loss" tail */}
                       <pattern
@@ -669,11 +690,15 @@ export default function TechExpertTracker() {
                         <rect width={6} height={6} fill="#ef4444" fillOpacity={0.55} />
                         <line x1={0} y1={0} x2={0} y2={6} stroke="#fecaca" strokeOpacity={0.55} strokeWidth={1} />
                       </pattern>
-                      {/* Soft glow for the positive-multiplier "bonus" tail */}
-                      <filter id="bonusGlow" x="-50%" y="-50%" width="200%" height="200%">
-                        <feGaussianBlur stdDeviation="2.5" result="b" />
+                      {/* Strong neon halo for the positive-multiplier "bonus" tail (cyan) */}
+                      <filter id="bonusGlow" x="-75%" y="-75%" width="250%" height="250%">
+                        <feGaussianBlur stdDeviation="1.4" result="b1" />
+                        <feGaussianBlur stdDeviation="4" result="b2" />
+                        <feFlood floodColor="#67e8f9" floodOpacity="0.9" result="halo" />
+                        <feComposite in="halo" in2="b2" operator="in" result="halo2" />
                         <feMerge>
-                          <feMergeNode in="b" />
+                          <feMergeNode in="halo2" />
+                          <feMergeNode in="b1" />
                           <feMergeNode in="SourceGraphic" />
                         </feMerge>
                       </filter>
@@ -721,15 +746,18 @@ export default function TechExpertTracker() {
                 </div>
               )}
 
-              {/* Center overlay — Total Balance focal point */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-2">
-                <span className="text-[10px] uppercase tracking-wider text-blue-200/70 font-semibold">
-                  Total Balance
-                </span>
-                <span className="mt-0.5 text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight leading-none">
-                  {monthTotals.total.toFixed(0)}
-                </span>
-                <span className="mt-1 text-[10px] font-semibold text-blue-200/70">UAH</span>
+              {/* Center overlay — Total Balance focal point. Lives inside the
+                  chart-sized wrapper so inset-0 maps to the donut's true center. */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="flex flex-col items-center justify-center text-center leading-none">
+                  <span className="text-[10px] uppercase tracking-[0.18em] text-blue-200/70 font-semibold">
+                    Total Balance
+                  </span>
+                  <span className="mt-1.5 text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight">
+                    {fmtUah(monthTotals.total)}
+                  </span>
+                  <span className="mt-1 text-[10px] font-semibold text-blue-200/70 tracking-wider">UAH</span>
+                </div>
               </div>
             </div>
 
@@ -1149,9 +1177,10 @@ function MetricChip({
   // The mini progress bar shows this card's share of the monthly total. When the
   // multiplier is non-zero AND this is a multiplier-affected card (Services / Base Rate),
   // we visually break out the delta:
-  //   - Positive multiplier: split the colored fill so the bonus tail is shown in green.
-  //   - Negative multiplier: append a red striped segment after the colored fill to
-  //     represent the amount that was subtracted (the "phantom loss").
+  //   - Positive multiplier: split the colored fill so the bonus tail is shown in CYAN
+  //     (biryuza) with a strong neon halo — distinct from the green Base Rate color.
+  //   - Negative multiplier: append a muted-red diagonal-striped segment after the
+  //     colored fill to represent the deducted amount (the "phantom loss").
   const hasDelta = showMultiplierDelta && multiplier !== 0 && value > 0
   const isPositive = multiplier > 0
   const isNegative = multiplier < 0
@@ -1166,16 +1195,21 @@ function MetricChip({
   let baseWidthPct = valueWidthPct
   let bonusWidthPct = 0
   let lossWidthPct = 0
+  let deltaUah = 0
 
   if (hasDelta) {
     if (isPositive) {
       baseWidthPct = valueWidthPct / (1 + multiplier)
       bonusWidthPct = Math.max(valueWidthPct - baseWidthPct, 0)
+      // Bonus UAH = final − base = value − value/(1+m)
+      deltaUah = value - value / (1 + multiplier)
     } else if (isNegative) {
       // multiplier is negative → (-multiplier)/(1+multiplier) > 0
       lossWidthPct = (valueWidthPct * -multiplier) / (1 + multiplier)
       // Cap so colored + loss never exceeds 100% of the bar width
       lossWidthPct = Math.min(lossWidthPct, Math.max(0, 100 - valueWidthPct))
+      // Loss UAH = (would-have-been) − final = value/(1+m) − value, rendered as negative
+      deltaUah = -((value * -multiplier) / (1 + multiplier))
     }
   }
 
@@ -1185,9 +1219,20 @@ function MetricChip({
         {icon}
         <span>{label}</span>
       </div>
-      <div className="mt-1.5 text-base font-bold text-white tabular-nums leading-none">
-        {value.toFixed(0)}
-        <span className="text-[10px] font-medium text-slate-500 ml-1">UAH</span>
+      <div className="mt-1.5 flex items-baseline gap-1.5 flex-wrap leading-none">
+        <span className="text-base font-bold text-white tabular-nums">{fmtUah(value)}</span>
+        <span className="text-[10px] font-medium text-slate-500">UAH</span>
+        {hasDelta && deltaUah !== 0 && (
+          <span
+            className="text-[10px] font-bold tabular-nums"
+            style={{
+              color: isPositive ? BONUS_COLOR : "#f87171",
+              textShadow: isPositive ? `0 0 8px ${BONUS_GLOW}` : undefined,
+            }}
+          >
+            {`(${deltaUah > 0 ? "+" : "-"}${fmtUah(Math.abs(deltaUah))})`}
+          </span>
+        )}
       </div>
       <div className="mt-2 h-1 w-full rounded-full bg-white/5 overflow-hidden flex">
         <div
@@ -1203,8 +1248,8 @@ function MetricChip({
             className="h-full transition-all duration-500"
             style={{
               width: `${bonusWidthPct}%`,
-              background: "#22c55e",
-              boxShadow: "0 0 10px rgba(34,197,94,0.85)",
+              background: BONUS_COLOR,
+              boxShadow: `0 0 6px ${BONUS_COLOR}, 0 0 12px ${BONUS_GLOW}, 0 0 18px ${BONUS_GLOW}`,
             }}
             aria-label={`Multiplier bonus +${Math.round(multiplier * 100)}%`}
           />
@@ -1215,7 +1260,7 @@ function MetricChip({
             style={{
               width: `${lossWidthPct}%`,
               backgroundImage:
-                "repeating-linear-gradient(45deg, rgba(239,68,68,0.9) 0 3px, rgba(239,68,68,0.35) 3px 6px)",
+                "repeating-linear-gradient(45deg, rgba(239,68,68,0.85) 0 3px, rgba(239,68,68,0.25) 3px 6px)",
             }}
             aria-label={`Multiplier penalty ${Math.round(multiplier * 100)}%`}
           />
