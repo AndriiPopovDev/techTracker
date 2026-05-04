@@ -100,36 +100,67 @@ const MONTH_NAMES = [
 
 const monthKeyOf = (dateStr: string) => dateStr.slice(0, 7) // "YYYY-MM"
 
-// Custom in-slice label for the donut chart — shows % inside the ring.
-// Uses white text with a subtle shadow so it contrasts against any slice color.
-const renderPieSliceLabel = (props: any) => {
-  const { cx, cy, midAngle, innerRadius, outerRadius, percent } = props
-  // Hide labels for very small slices to avoid visual noise/overlap
-  if (!percent || percent < 0.06) return null
+// External label renderer for the donut. Draws a polyline (leader line) from the
+// outer edge of each slice to a label sitting outside the ring. The label shows
+// the absolute UAH amount and the segment name, color-matched to the slice.
+// Auxiliary slices used purely to visualize the multiplier delta on Services
+// (the green "bonus" tail and the red striped "loss" tail) are flagged with
+// `hideLabel` so they don't get their own external label — their effect is
+// surfaced via the suffix appended to the parent Services label.
+const renderExternalDonutLabel = (props: any) => {
+  const { cx, cy, midAngle, outerRadius, payload, value } = props
+  if (!payload || payload.hideLabel) return null
+
   const RADIAN = Math.PI / 180
-  // Place the label in the visual middle of the ring (between inner and outer radii)
-  const radius = innerRadius + (outerRadius - innerRadius) * 0.5
-  const x = cx + radius * Math.cos(-midAngle * RADIAN)
-  const y = cy + radius * Math.sin(-midAngle * RADIAN)
+  const cos = Math.cos(-midAngle * RADIAN)
+  const sin = Math.sin(-midAngle * RADIAN)
+
+  // Three-point polyline: edge of slice → small radial step → horizontal stub
+  const sx = cx + outerRadius * cos
+  const sy = cy + outerRadius * sin
+  const mx = cx + (outerRadius + 10) * cos
+  const my = cy + (outerRadius + 10) * sin
+  const onRight = cos >= 0
+  const ex = mx + (onRight ? 1 : -1) * 16
+  const ey = my
+  const tx = ex + (onRight ? 4 : -4)
+  const textAnchor = onRight ? "start" : "end"
+  const color = payload.color || "#cbd5e1"
+  const suffix = payload.suffix || ""
+  const suffixColor = payload.suffixColor || "rgba(203,213,225,0.7)"
+
   return (
-    <text
-      x={x}
-      y={y}
-      fill="#ffffff"
-      textAnchor="middle"
-      dominantBaseline="central"
-      style={{
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: 0.2,
-        paintOrder: "stroke",
-        stroke: "rgba(0,0,0,0.55)",
-        strokeWidth: 2,
-        strokeLinejoin: "round",
-      }}
-    >
-      {`${Math.round(percent * 100)}%`}
-    </text>
+    <g>
+      <polyline
+        points={`${sx},${sy} ${mx},${my} ${ex},${ey}`}
+        stroke={color}
+        strokeWidth={1}
+        fill="none"
+        opacity={0.85}
+      />
+      <circle cx={ex} cy={ey} r={1.6} fill={color} />
+      <text
+        x={tx}
+        y={ey - 3}
+        textAnchor={textAnchor}
+        style={{ fontSize: 11, fontWeight: 700, fill: color, letterSpacing: 0.2 }}
+      >
+        <tspan>{`${Number(value).toFixed(0)} UAH`}</tspan>
+        {suffix ? (
+          <tspan dx={4} style={{ fontSize: 9, fontWeight: 700, fill: suffixColor }}>
+            {suffix}
+          </tspan>
+        ) : null}
+      </text>
+      <text
+        x={tx}
+        y={ey + 9}
+        textAnchor={textAnchor}
+        style={{ fontSize: 9, fontWeight: 500, fill: "rgba(203,213,225,0.65)", letterSpacing: 0.3 }}
+      >
+        {payload.name}
+      </text>
+    </g>
   )
 }
 
@@ -435,17 +466,100 @@ export default function TechExpertTracker() {
     }
   }
 
-  // Pie chart data — monthly cumulative distribution (4 slices)
-  const chartData = useMemo(
-    () =>
-      [
-        { name: "Services", value: Number(monthTotals.services.toFixed(2)), color: SERVICES_COLOR },
-        { name: "Base Rate", value: Number(monthTotals.base.toFixed(2)), color: BASE_COLOR },
-        { name: "Trading", value: Number(monthTotals.trading.toFixed(2)), color: TRADING_COLOR },
-        { name: "Tea", value: Number(monthTotals.tea.toFixed(2)), color: TEA_COLOR },
-      ].filter((d) => d.value > 0),
-    [monthTotals],
-  )
+  // Pie chart data — monthly cumulative distribution. Services is decomposed to
+  // visually surface the global multiplier:
+  //   - Positive m: Services slice = blue "kept" base + glowing green "bonus" tail
+  //   - Negative m: Services slice = blue "kept" amount + red striped "lost" tail
+  // monthTotals.services already has the multiplier baked in (raw * (1 + m)).
+  const chartData = useMemo(() => {
+    const m = globalMultiplier
+    const services = monthTotals.services
+    const base = monthTotals.base
+    const trading = monthTotals.trading
+    const tea = monthTotals.tea
+
+    type Slice = {
+      name: string
+      value: number
+      color: string
+      kind?: "services" | "bonus" | "loss" | "base" | "trading" | "tea"
+      hideLabel?: boolean
+      suffix?: string
+      suffixColor?: string
+      fillOverride?: string
+      filterOverride?: string
+    }
+
+    const data: Slice[] = []
+    const mPctLabel = `${m > 0 ? "+" : ""}${Math.round(m * 100)}%`
+
+    if (services > 0) {
+      if (m > 0) {
+        // Split into base (raw) blue + bonus green
+        const base0 = services / (1 + m)
+        const bonus = services - base0
+        data.push({
+          name: "Services",
+          value: Number(base0.toFixed(2)),
+          color: SERVICES_COLOR,
+          kind: "services",
+          suffix: `(${mPctLabel})`,
+          suffixColor: "#22c55e",
+        })
+        if (bonus > 0) {
+          data.push({
+            name: "Services Bonus",
+            value: Number(bonus.toFixed(2)),
+            color: "#22c55e",
+            kind: "bonus",
+            hideLabel: true,
+            filterOverride: "url(#bonusGlow)",
+          })
+        }
+      } else if (m < 0) {
+        // Services arc shows the kept amount in blue, then a red striped "loss"
+        // tail equal to the would-have-been bonus that was sacrificed.
+        const lost = (services * -m) / (1 + m)
+        data.push({
+          name: "Services",
+          value: Number(services.toFixed(2)),
+          color: SERVICES_COLOR,
+          kind: "services",
+          suffix: `(${mPctLabel})`,
+          suffixColor: "#f87171",
+        })
+        if (lost > 0) {
+          data.push({
+            name: "Services Loss",
+            value: Number(lost.toFixed(2)),
+            color: "#ef4444",
+            kind: "loss",
+            hideLabel: true,
+            fillOverride: "url(#lossStripes)",
+          })
+        }
+      } else {
+        data.push({
+          name: "Services",
+          value: Number(services.toFixed(2)),
+          color: SERVICES_COLOR,
+          kind: "services",
+        })
+      }
+    }
+
+    if (base > 0) {
+      data.push({ name: "Base Rate", value: Number(base.toFixed(2)), color: BASE_COLOR, kind: "base" })
+    }
+    if (trading > 0) {
+      data.push({ name: "Trading", value: Number(trading.toFixed(2)), color: TRADING_COLOR, kind: "trading" })
+    }
+    if (tea > 0) {
+      data.push({ name: "Tea", value: Number(tea.toFixed(2)), color: TEA_COLOR, kind: "tea" })
+    }
+
+    return data
+  }, [monthTotals, globalMultiplier])
 
   if (!isLoaded) return null
 
@@ -537,28 +651,53 @@ export default function TechExpertTracker() {
             </div>
           </div>
 
-          {/* Split: Donut on the left, Total + meta on the right */}
-          <div className="relative flex items-center gap-3">
-            <div className="w-[120px] h-[120px] sm:w-[140px] sm:h-[140px] shrink-0">
+          {/* Donut chart with external labels + Total Balance overlaid in the center */}
+          <div className="relative">
+            <div className="w-full h-[240px] sm:h-[260px]">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
+                  <PieChart margin={{ top: 16, right: 64, bottom: 16, left: 64 }}>
+                    <defs>
+                      {/* Diagonal striped fill used for the negative-multiplier "loss" tail */}
+                      <pattern
+                        id="lossStripes"
+                        patternUnits="userSpaceOnUse"
+                        width={6}
+                        height={6}
+                        patternTransform="rotate(45)"
+                      >
+                        <rect width={6} height={6} fill="#ef4444" fillOpacity={0.55} />
+                        <line x1={0} y1={0} x2={0} y2={6} stroke="#fecaca" strokeOpacity={0.55} strokeWidth={1} />
+                      </pattern>
+                      {/* Soft glow for the positive-multiplier "bonus" tail */}
+                      <filter id="bonusGlow" x="-50%" y="-50%" width="200%" height="200%">
+                        <feGaussianBlur stdDeviation="2.5" result="b" />
+                        <feMerge>
+                          <feMergeNode in="b" />
+                          <feMergeNode in="SourceGraphic" />
+                        </feMerge>
+                      </filter>
+                    </defs>
                     <Pie
                       data={chartData}
                       cx="50%"
                       cy="50%"
-                      innerRadius="62%"
-                      outerRadius="92%"
+                      innerRadius="58%"
+                      outerRadius="78%"
                       paddingAngle={0}
                       dataKey="value"
                       stroke="none"
                       cornerRadius={4}
                       labelLine={false}
-                      label={renderPieSliceLabel}
+                      label={renderExternalDonutLabel}
                       isAnimationActive={false}
                     >
                       {chartData.map((entry) => (
-                        <Cell key={entry.name} fill={entry.color} />
+                        <Cell
+                          key={entry.name}
+                          fill={entry.fillOverride || entry.color}
+                          filter={entry.filterOverride}
+                        />
                       ))}
                     </Pie>
                     <Tooltip
@@ -575,41 +714,45 @@ export default function TechExpertTracker() {
                   </PieChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="w-full h-full rounded-full border-2 border-dashed border-white/10 flex items-center justify-center text-[10px] text-slate-500 text-center px-2">
-                  No shifts yet
+                <div className="w-full h-full flex items-center justify-center">
+                  <div className="w-[140px] h-[140px] rounded-full border-2 border-dashed border-white/10 flex items-center justify-center text-[10px] text-slate-500 text-center px-2">
+                    No shifts yet
+                  </div>
                 </div>
               )}
+
+              {/* Center overlay — Total Balance focal point */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-2">
+                <span className="text-[10px] uppercase tracking-wider text-blue-200/70 font-semibold">
+                  Total Balance
+                </span>
+                <span className="mt-0.5 text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight leading-none">
+                  {monthTotals.total.toFixed(0)}
+                </span>
+                <span className="mt-1 text-[10px] font-semibold text-blue-200/70">UAH</span>
+              </div>
             </div>
 
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-1.5 flex-wrap">
-                <span className="text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight leading-none">
-                  {monthTotals.total.toFixed(2)}
+            {/* Meta row — trend, shifts/avg, multiplier */}
+            <div className="mt-1 flex items-center justify-center gap-1.5 flex-wrap text-[11px]">
+              {trendDeltaPct === null ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-medium text-slate-400">
+                  <Minus className="w-3 h-3" />
+                  No prior month
                 </span>
-                <span className="text-xs font-semibold text-blue-200/70">UAH</span>
-              </div>
+              ) : trendDeltaPct >= 0 ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[10px] font-semibold text-emerald-300">
+                  <TrendingUp className="w-3 h-3" />
+                  {`+${trendDeltaPct.toFixed(1)}% vs last month`}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 border border-red-400/30 text-[10px] font-semibold text-red-300">
+                  <TrendingDown className="w-3 h-3" />
+                  {`${trendDeltaPct.toFixed(1)}% vs last month`}
+                </span>
+              )}
 
-              {/* Trend pill: this month vs previous month */}
-              <div className="mt-2">
-                {trendDeltaPct === null ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-medium text-slate-400">
-                    <Minus className="w-3 h-3" />
-                    No prior month
-                  </span>
-                ) : trendDeltaPct >= 0 ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[10px] font-semibold text-emerald-300">
-                    <TrendingUp className="w-3 h-3" />
-                    {`+${trendDeltaPct.toFixed(1)}% vs last month`}
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 border border-red-400/30 text-[10px] font-semibold text-red-300">
-                    <TrendingDown className="w-3 h-3" />
-                    {`${trendDeltaPct.toFixed(1)}% vs last month`}
-                  </span>
-                )}
-              </div>
-
-              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-300/80 flex-wrap">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300/90">
                 <span>
                   {monthEntries.length} {monthEntries.length === 1 ? "shift" : "shifts"}
                 </span>
@@ -620,17 +763,19 @@ export default function TechExpertTracker() {
                     <span className="font-semibold text-slate-200 tabular-nums">{avgPerShift.toFixed(0)}</span>
                   </>
                 )}
-                <span className="text-slate-600">·</span>
-                <span className={`font-bold ${multiplierTone}`}>
-                  {multiplierPct > 0 ? "+" : ""}
-                  {multiplierPct}%
-                </span>
+              </span>
+
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 font-bold ${multiplierTone}`}
+              >
+                {multiplierPct > 0 ? "+" : ""}
+                {multiplierPct}%
                 {autoMultiplier && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-300/90 px-1.5 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30">
+                  <span className="ml-1 text-[9px] font-semibold text-blue-300/90 px-1 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30">
                     AUTO
                   </span>
                 )}
-              </div>
+              </span>
             </div>
           </div>
 
