@@ -645,7 +645,7 @@ export default function TechExpertTracker() {
         </header>
 
         {/* COMPACT HERO — Balance + Pie + Goal + Multiplier merged into ONE card */}
-        <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-600/20 via-blue-500/5 to-transparent backdrop-blur-xl border border-white/10 p-4 mb-4 shadow-[0_8px_40px_-12px_rgba(59,130,246,0.45)]">
+        <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-600/20 via-blue-500/5 to-transparent backdrop-blur-xl border border-white/10 p-4 mb-3 shadow-[0_8px_40px_-12px_rgba(59,130,246,0.45)]">
           <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full bg-blue-500/30 blur-3xl pointer-events-none" />
 
           <div className="relative flex items-center justify-between mb-3 gap-2">
@@ -793,12 +793,22 @@ export default function TechExpertTracker() {
                 )}
               </ul>
             )}
-            {/* Spacer in detailed mode so donut + total balance still flow nicely */}
-            {layoutMode === "detailed" && <div className="flex-1 min-w-0" />}
-
-            {/* Total Balance — far right, with breathing room from the chart */}
-            <div className="shrink-0 self-center text-right pl-1">
-              <div className="text-2xl sm:text-3xl font-bold text-white tabular-nums tracking-tight leading-none">
+            {/* Total Balance — adapts to layout mode:
+                · Compact: sits on the right with right-aligned text (legend fills space to its left)
+                · Detailed: legend is hidden, so this block grows (`flex-1`) and centers itself
+                  next to the donut, producing the balanced 2-column look. */}
+            <div
+              className={`self-center ${
+                layoutMode === "detailed"
+                  ? "flex-1 min-w-0 text-center"
+                  : "shrink-0 text-right pl-1"
+              }`}
+            >
+              <div
+                className={`font-bold text-white tabular-nums tracking-tight leading-none ${
+                  layoutMode === "detailed" ? "text-3xl sm:text-4xl" : "text-2xl sm:text-3xl"
+                }`}
+              >
                 {fmtUah(monthTotals.total)}
               </div>
               <div className="mt-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-blue-200/70">
@@ -807,8 +817,13 @@ export default function TechExpertTracker() {
             </div>
           </div>
 
-          {/* Meta row — trend, shifts/avg, multiplier — moved below the chart row for breathing room */}
-          <div className="relative mt-3 flex items-center gap-1.5 flex-wrap text-[11px]">
+          {/* Meta row — trend, shifts/avg, multiplier — moved below the chart row for breathing room.
+              In detailed mode it centers under the (now-centered) Total Balance value. */}
+          <div
+            className={`relative mt-2 flex items-center gap-1.5 flex-wrap text-[11px] ${
+              layoutMode === "detailed" ? "justify-center" : ""
+            }`}
+          >
             {trendDeltaPct === null ? (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-medium text-slate-400">
                 <Minus className="w-3 h-3" />
@@ -992,7 +1007,7 @@ export default function TechExpertTracker() {
         {/* Metric chips: 4 categories — only rendered in "detailed" layout mode.
             In compact mode, the legend next to the donut already conveys per-category totals. */}
         {layoutMode === "detailed" && (
-          <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
+          <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
             <MetricChip
               label="Services"
               value={monthTotals.services}
@@ -1040,11 +1055,54 @@ export default function TechExpertTracker() {
             </span>
           </div>
 
-          {/* Services input */}
+          {/* Services input — base-rate is now a compact "status LED" toggle on the label row,
+              replacing the previous bulky full-width card. The dot acts as the toggle button. */}
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-400">
-              Total services amount <span className="text-slate-500">(× 3.5%)</span>
-            </label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-medium text-slate-400">
+                Total services amount <span className="text-slate-500">(× 3.5%)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => updateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
+                aria-pressed={currentRecord.hasBaseRate}
+                title={
+                  currentRecord.hasBaseRate
+                    ? "Base rate ON — adds +400 UAH (multiplier applies). Click to disable."
+                    : "Base rate OFF — click to add +400 UAH base shift rate."
+                }
+                className={`group flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full border transition-all ${
+                  currentRecord.hasBaseRate
+                    ? "border-cyan-300/40 bg-cyan-400/10 shadow-[0_0_14px_-4px_rgba(34,211,238,0.7)]"
+                    : "border-white/10 bg-white/5 hover:border-white/20"
+                }`}
+              >
+                {/* Status LED — glowing electric cyan when ON, muted slate when OFF */}
+                <span className="relative flex items-center justify-center w-3 h-3">
+                  {currentRecord.hasBaseRate && (
+                    <span className="absolute inset-0 rounded-full bg-cyan-400/60 animate-ping" />
+                  )}
+                  <span
+                    className={`relative w-2 h-2 rounded-full transition-colors ${
+                      currentRecord.hasBaseRate ? "bg-cyan-300" : "bg-slate-600 group-hover:bg-slate-500"
+                    }`}
+                    style={
+                      currentRecord.hasBaseRate
+                        ? { boxShadow: "0 0 8px rgba(34,211,238,0.95), 0 0 14px rgba(6,182,212,0.7)" }
+                        : undefined
+                    }
+                  />
+                </span>
+                <span
+                  className={`text-[10px] font-semibold tabular-nums tracking-tight ${
+                    currentRecord.hasBaseRate ? "text-cyan-200" : "text-slate-400"
+                  }`}
+                >
+                  +400 UAH
+                </span>
+                <span className="text-[9px] text-slate-500 hidden sm:inline">base rate</span>
+              </button>
+            </div>
             <input
               type="number"
               inputMode="decimal"
@@ -1054,33 +1112,6 @@ export default function TechExpertTracker() {
               className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
             />
           </div>
-
-          {/* Base rate toggle */}
-          <button
-            type="button"
-            onClick={() => updateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
-            className={`w-full flex items-center justify-between p-3.5 rounded-2xl border transition-all ${
-              currentRecord.hasBaseRate
-                ? "bg-emerald-500/10 border-emerald-400/30 shadow-[0_0_24px_-8px_rgba(34,197,94,0.6)]"
-                : "bg-white/5 border-white/10"
-            }`}
-          >
-            <div className="flex flex-col items-start">
-              <span className="text-sm font-medium text-white">Shift Base Rate</span>
-              <span className="text-[11px] text-slate-400">Adds +400 UAH (multiplier applies)</span>
-            </div>
-            <div
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                currentRecord.hasBaseRate ? "bg-emerald-500" : "bg-slate-700"
-              }`}
-            >
-              <span
-                className={`absolute top-[2px] left-[2px] w-5 h-5 rounded-full bg-white transition-transform ${
-                  currentRecord.hasBaseRate ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
-            </div>
-          </button>
 
           {/* Trading + Tea inputs side-by-side on mobile too */}
           <div className="grid grid-cols-2 gap-3">
