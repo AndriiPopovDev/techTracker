@@ -25,6 +25,8 @@ import {
   Settings as SettingsIcon,
   Lock,
   Minus,
+  LayoutGrid,
+  Rows3,
 } from "lucide-react"
 
 const SERVICES_COLOR = "#3b82f6" // blue
@@ -71,6 +73,8 @@ const HISTORY_KEY = "techExpertHistory"
 const MULTIPLIER_KEY = "techExpertMultiplier"
 const GOALS_KEY = "techExpertGoals" // monthly RAW services goal (per month key)
 const AUTO_MULT_KEY = "techExpertAutoMultiplier"
+const LAYOUT_MODE_KEY = "techExpertLayoutMode" // "compact" (legend visible, cards hidden) | "detailed" (legend hidden, cards visible)
+type LayoutMode = "compact" | "detailed"
 
 const DEFAULT_GOAL = 50000
 
@@ -109,77 +113,6 @@ const BONUS_GLOW = "#67e8f9" // cyan-300 — used for halo accents
 // matching the visual style requested in the spec ("12 000 UAH (+2 000)").
 const fmtUah = (n: number) => Math.round(n).toLocaleString("en-US").replace(/,/g, "\u202f")
 
-// External label renderer for the donut. Draws a polyline (leader line) from the
-// outer edge of each slice to a label sitting outside the ring. The label shows
-// the FINAL UAH amount and — for slices that carry a multiplier delta — an
-// inline "(±delta)" suffix colored cyan for bonuses and red for penalties.
-// Auxiliary slices that only exist to visualize the multiplier tail (cyan
-// "bonus" arc, red striped "loss" arc) are flagged with `hideLabel` so they
-// don't get their own external label.
-const renderExternalDonutLabel = (props: any) => {
-  const { cx, cy, midAngle, outerRadius, payload, value } = props
-  if (!payload || payload.hideLabel) return null
-
-  const RADIAN = Math.PI / 180
-  const cos = Math.cos(-midAngle * RADIAN)
-  const sin = Math.sin(-midAngle * RADIAN)
-
-  // Three-point polyline: edge of slice → small radial step → horizontal stub
-  const sx = cx + outerRadius * cos
-  const sy = cy + outerRadius * sin
-  const mx = cx + (outerRadius + 10) * cos
-  const my = cy + (outerRadius + 10) * sin
-  const onRight = cos >= 0
-  const ex = mx + (onRight ? 1 : -1) * 18
-  const ey = my
-  const tx = ex + (onRight ? 4 : -4)
-  const textAnchor = onRight ? "start" : "end"
-  const color = payload.color || "#cbd5e1"
-
-  // Prefer payload.displayValue (e.g. the multiplied final for Services/Base
-  // Rate) over the raw arc value, which is just the geometric size of the
-  // base portion when a delta tail is present.
-  const displayValue: number = typeof payload.displayValue === "number" ? payload.displayValue : Number(value)
-  const delta: number | undefined = typeof payload.delta === "number" ? payload.delta : undefined
-  const deltaSuffix =
-    delta !== undefined && delta !== 0 ? `(${delta > 0 ? "+" : "-"}${fmtUah(Math.abs(delta))})` : ""
-  const deltaColor = delta !== undefined && delta < 0 ? "#f87171" : BONUS_COLOR
-
-  return (
-    <g>
-      <polyline
-        points={`${sx},${sy} ${mx},${my} ${ex},${ey}`}
-        stroke={color}
-        strokeWidth={1}
-        fill="none"
-        opacity={0.85}
-      />
-      <circle cx={ex} cy={ey} r={1.6} fill={color} />
-      <text
-        x={tx}
-        y={ey - 3}
-        textAnchor={textAnchor}
-        style={{ fontSize: 11, fontWeight: 700, fill: color, letterSpacing: 0.2 }}
-      >
-        <tspan>{`${fmtUah(displayValue)} UAH`}</tspan>
-        {deltaSuffix ? (
-          <tspan dx={4} style={{ fontSize: 10, fontWeight: 700, fill: deltaColor }}>
-            {deltaSuffix}
-          </tspan>
-        ) : null}
-      </text>
-      <text
-        x={tx}
-        y={ey + 9}
-        textAnchor={textAnchor}
-        style={{ fontSize: 9, fontWeight: 500, fill: "rgba(203,213,225,0.65)", letterSpacing: 0.3 }}
-      >
-        {payload.name}
-      </text>
-    </g>
-  )
-}
-
 // Helpers to read legacy entries safely
 const entryRawServices = (e: HistoryEntry) => Number(e.servicesRaw) || 0
 const entryRawBase = (e: HistoryEntry) =>
@@ -200,6 +133,8 @@ export default function TechExpertTracker() {
   const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7))
   const [autoMultiplier, setAutoMultiplier] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Compact: legend next to chart, summary cards hidden. Detailed: cards visible, legend hidden.
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("compact")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Hydrate from localStorage
@@ -218,6 +153,8 @@ export default function TechExpertTracker() {
       if (savedGoals) setGoals(JSON.parse(savedGoals))
       const savedAuto = localStorage.getItem(AUTO_MULT_KEY)
       if (savedAuto !== null) setAutoMultiplier(savedAuto === "true")
+      const savedLayout = localStorage.getItem(LAYOUT_MODE_KEY)
+      if (savedLayout === "compact" || savedLayout === "detailed") setLayoutMode(savedLayout)
     } catch {
       /* noop */
     }
@@ -347,6 +284,11 @@ export default function TechExpertTracker() {
   const updateAutoMultiplier = (next: boolean) => {
     setAutoMultiplier(next)
     localStorage.setItem(AUTO_MULT_KEY, String(next))
+  }
+
+  const updateLayoutMode = (next: LayoutMode) => {
+    setLayoutMode(next)
+    localStorage.setItem(LAYOUT_MODE_KEY, next)
   }
 
   // Auto-derive the global multiplier from the forecast when auto mode is ON
@@ -584,6 +526,58 @@ export default function TechExpertTracker() {
     return data
   }, [monthTotals, globalMultiplier])
 
+  // Compact legend data — replaces the donut's external leader-line labels.
+  // Shows: color dot + icon + name + final UAH; with a smaller, subtle delta
+  // suffix when the global multiplier is non-zero (cyan for +, red for -).
+  const legendItems = useMemo(() => {
+    const m = globalMultiplier
+    type LegendItem = {
+      name: string
+      color: string
+      value: number
+      delta?: number
+      icon: React.ReactNode
+    }
+    const items: LegendItem[] = []
+    if (monthTotals.services > 0) {
+      const base0 = monthTotals.services / (1 + m)
+      items.push({
+        name: "Services",
+        color: SERVICES_COLOR,
+        value: monthTotals.services,
+        delta: m !== 0 ? monthTotals.services - base0 : undefined,
+        icon: <Briefcase className="w-3 h-3" />,
+      })
+    }
+    if (monthTotals.base > 0) {
+      const base0 = monthTotals.base / (1 + m)
+      items.push({
+        name: "Base Rate",
+        color: BASE_COLOR,
+        value: monthTotals.base,
+        delta: m !== 0 ? monthTotals.base - base0 : undefined,
+        icon: <CheckCircle2 className="w-3 h-3" />,
+      })
+    }
+    if (monthTotals.trading > 0) {
+      items.push({
+        name: "Trading",
+        color: TRADING_COLOR,
+        value: monthTotals.trading,
+        icon: <Coins className="w-3 h-3" />,
+      })
+    }
+    if (monthTotals.tea > 0) {
+      items.push({
+        name: "Tea",
+        color: TEA_COLOR,
+        value: monthTotals.tea,
+        icon: <Coffee className="w-3 h-3" />,
+      })
+    }
+    return items
+  }, [monthTotals, globalMultiplier])
+
   if (!isLoaded) return null
 
   const multiplierPct = Math.round(globalMultiplier * 100)
@@ -651,7 +645,7 @@ export default function TechExpertTracker() {
         </header>
 
         {/* COMPACT HERO — Balance + Pie + Goal + Multiplier merged into ONE card */}
-        <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-600/20 via-blue-500/5 to-transparent backdrop-blur-xl border border-white/10 p-4 mb-4 shadow-[0_8px_40px_-12px_rgba(59,130,246,0.45)]">
+        <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-600/20 via-blue-500/5 to-transparent backdrop-blur-xl border border-white/10 p-4 mb-3 shadow-[0_8px_40px_-12px_rgba(59,130,246,0.45)]">
           <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full bg-blue-500/30 blur-3xl pointer-events-none" />
 
           <div className="relative flex items-center justify-between mb-3 gap-2">
@@ -674,13 +668,15 @@ export default function TechExpertTracker() {
             </div>
           </div>
 
-          {/* Side-by-side: donut on the left with external labels, Total Balance on the right */}
-          <div className="relative flex items-center gap-3 sm:gap-4">
-            {/* Donut: fixed-width column on the left so labels have room to render */}
-            <div className="shrink-0 w-[170px] h-[170px] sm:w-[190px] sm:h-[190px] relative">
+          {/* Side-by-side: donut anchor on left, vertical Legend in the middle, Total Balance on the right */}
+          <div className="relative flex items-center gap-2.5 sm:gap-3">
+            {/* Donut: visual anchor on the left. No external labels — clean ring with empty center.
+                `overflow-visible` on the SVG + small inner margin lets the bonusGlow filter
+                bleed past the chart bounds without being clipped at the bottom edge. */}
+            <div className="shrink-0 w-[128px] h-[128px] sm:w-[148px] sm:h-[148px] relative [&_svg]:!overflow-visible">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <PieChart margin={{ top: 8, right: 44, bottom: 8, left: 44 }}>
+                  <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                     <defs>
                       {/* Diagonal striped fill used for the negative-multiplier "loss" tail */}
                       <pattern
@@ -718,14 +714,14 @@ export default function TechExpertTracker() {
                       data={chartData}
                       cx="50%"
                       cy="50%"
-                      innerRadius="60%"
-                      outerRadius="92%"
+                      innerRadius="62%"
+                      outerRadius="98%"
                       paddingAngle={0}
                       dataKey="value"
                       stroke="none"
                       cornerRadius={3}
                       labelLine={false}
-                      label={renderExternalDonutLabel}
+                      label={false}
                       isAnimationActive={false}
                     >
                       {chartData.map((entry) => (
@@ -751,82 +747,139 @@ export default function TechExpertTracker() {
                 </ResponsiveContainer>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
-                  <div className="w-[120px] h-[120px] rounded-full border-2 border-dashed border-white/10 flex items-center justify-center text-[10px] text-slate-500 text-center px-2">
+                  <div className="w-[100px] h-[100px] rounded-full border-2 border-dashed border-white/10 flex items-center justify-center text-[10px] text-slate-500 text-center px-2">
                     No shifts yet
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Total Balance + meta — sits to the RIGHT of the donut */}
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-1.5 flex-wrap leading-none">
-                <span className="text-3xl sm:text-4xl font-bold text-white tabular-nums tracking-tight">
-                  {fmtUah(monthTotals.total)}
-                </span>
-                <span className="text-xs font-semibold text-blue-200/70">UAH</span>
-              </div>
-
-              {/* Meta row — trend, shifts/avg, multiplier */}
-              <div className="mt-2 flex items-center gap-1.5 flex-wrap text-[11px]">
-              {trendDeltaPct === null ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-medium text-slate-400">
-                  <Minus className="w-3 h-3" />
-                  No prior month
-                </span>
-              ) : trendDeltaPct >= 0 ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[10px] font-semibold text-emerald-300">
-                  <TrendingUp className="w-3 h-3" />
-                  {`+${trendDeltaPct.toFixed(1)}% vs last month`}
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 border border-red-400/30 text-[10px] font-semibold text-red-300">
-                  <TrendingDown className="w-3 h-3" />
-                  {`${trendDeltaPct.toFixed(1)}% vs last month`}
-                </span>
-              )}
-
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300/90">
-                <span>
-                  {monthEntries.length} {monthEntries.length === 1 ? "shift" : "shifts"}
-                </span>
-                {monthEntries.length > 0 && (
-                  <>
-                    <span className="text-slate-600">·</span>
-                    <span className="text-slate-400">avg</span>
-                    <span className="font-semibold text-slate-200 tabular-nums">{avgPerShift.toFixed(0)}</span>
-                  </>
+            {/* Compact vertical Legend — only shown in "compact" layout mode.
+                Each row: dot + colored icon + "Name:" + final UAH + subtle delta.
+                Name and value sit close together (gap-1) for a tight, readable list. */}
+            {layoutMode === "compact" && (
+              <ul className="flex-1 min-w-0 self-center space-y-1.5 py-1">
+                {legendItems.length === 0 ? (
+                  <li className="text-[11px] text-slate-500">No data yet</li>
+                ) : (
+                  legendItems.map((item) => (
+                    <li key={item.name} className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ background: item.color, boxShadow: `0 0 6px ${item.color}` }}
+                      />
+                      <span className="shrink-0" style={{ color: item.color }}>
+                        {item.icon}
+                      </span>
+                      <span className="text-[11px] sm:text-xs text-slate-300 truncate min-w-0">
+                        {item.name}
+                        <span className="text-slate-500">:</span>
+                      </span>
+                      <span className="text-[11px] sm:text-xs font-semibold text-white tabular-nums shrink-0">
+                        {fmtUah(item.value)}
+                      </span>
+                      {item.delta !== undefined && Math.abs(item.delta) >= 0.5 && (
+                        <span
+                          className={`text-[9px] sm:text-[10px] font-medium tabular-nums shrink-0 ${
+                            item.delta > 0 ? "text-cyan-300/90" : "text-red-300/90"
+                          }`}
+                        >
+                          {item.delta > 0 ? "+" : "-"}
+                          {fmtUah(Math.abs(item.delta))}
+                        </span>
+                      )}
+                    </li>
+                  ))
                 )}
-              </span>
-
-              <span
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold ${
-                  multiplierPct > 0
-                    ? "bg-cyan-400/10 border border-cyan-300/40 text-cyan-200"
-                    : multiplierPct < 0
-                      ? "bg-red-500/10 border border-red-400/30 text-red-300"
-                      : "bg-white/5 border border-white/10 text-slate-200"
+              </ul>
+            )}
+            {/* Total Balance — adapts to layout mode:
+                · Compact: sits on the right with right-aligned text (legend fills space to its left)
+                · Detailed: legend is hidden, so this block grows (`flex-1`) and centers itself
+                  next to the donut, producing the balanced 2-column look. */}
+            <div
+              className={`self-center ${
+                layoutMode === "detailed"
+                  ? "flex-1 min-w-0 text-center"
+                  : "shrink-0 text-right pl-1"
+              }`}
+            >
+              <div
+                className={`font-bold text-white tabular-nums tracking-tight leading-none ${
+                  layoutMode === "detailed" ? "text-3xl sm:text-4xl" : "text-2xl sm:text-3xl"
                 }`}
-                style={
-                  multiplierPct > 0
-                    ? {
-                        textShadow: "0 0 6px rgba(34,211,238,0.75), 0 0 14px rgba(6,182,212,0.55)",
-                        boxShadow:
-                          "0 0 0 1px rgba(34,211,238,0.25), 0 0 12px rgba(34,211,238,0.35), inset 0 0 8px rgba(165,243,252,0.15)",
-                      }
-                    : undefined
-                }
               >
-                {multiplierPct > 0 ? "+" : ""}
-                {multiplierPct}%
-                {autoMultiplier && (
-                  <span className="ml-1 text-[9px] font-semibold text-blue-300/90 px-1 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30">
-                    AUTO
-                  </span>
-                )}
-              </span>
+                {fmtUah(monthTotals.total)}
+              </div>
+              <div className="mt-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-blue-200/70">
+                UAH
               </div>
             </div>
+          </div>
+
+          {/* Meta row — trend, shifts/avg, multiplier — moved below the chart row for breathing room.
+              In detailed mode it centers under the (now-centered) Total Balance value. */}
+          <div
+            className={`relative mt-2 flex items-center gap-1.5 flex-wrap text-[11px] ${
+              layoutMode === "detailed" ? "justify-center" : ""
+            }`}
+          >
+            {trendDeltaPct === null ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-medium text-slate-400">
+                <Minus className="w-3 h-3" />
+                No prior month
+              </span>
+            ) : trendDeltaPct >= 0 ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[10px] font-semibold text-emerald-300">
+                <TrendingUp className="w-3 h-3" />
+                {`+${trendDeltaPct.toFixed(1)}% vs last month`}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 border border-red-400/30 text-[10px] font-semibold text-red-300">
+                <TrendingDown className="w-3 h-3" />
+                {`${trendDeltaPct.toFixed(1)}% vs last month`}
+              </span>
+            )}
+
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300/90">
+              <span>
+                {monthEntries.length} {monthEntries.length === 1 ? "shift" : "shifts"}
+              </span>
+              {monthEntries.length > 0 && (
+                <>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-400">avg</span>
+                  <span className="font-semibold text-slate-200 tabular-nums">{avgPerShift.toFixed(0)}</span>
+                </>
+              )}
+            </span>
+
+            <span
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold ${
+                multiplierPct > 0
+                  ? "bg-cyan-400/10 border border-cyan-300/40 text-cyan-200"
+                  : multiplierPct < 0
+                    ? "bg-red-500/10 border border-red-400/30 text-red-300"
+                    : "bg-white/5 border border-white/10 text-slate-200"
+              }`}
+              style={
+                multiplierPct > 0
+                  ? {
+                      textShadow: "0 0 6px rgba(34,211,238,0.75), 0 0 14px rgba(6,182,212,0.55)",
+                      boxShadow:
+                        "0 0 0 1px rgba(34,211,238,0.25), 0 0 12px rgba(34,211,238,0.35), inset 0 0 8px rgba(165,243,252,0.15)",
+                    }
+                  : undefined
+              }
+            >
+              {multiplierPct > 0 ? "+" : ""}
+              {multiplierPct}%
+              {autoMultiplier && (
+                <span className="ml-1 text-[9px] font-semibold text-blue-300/90 px-1 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30">
+                  AUTO
+                </span>
+              )}
+            </span>
           </div>
 
           {/* MONTHLY SERVICES GOAL — thin progress bar with forecast tick */}
@@ -903,7 +956,9 @@ export default function TechExpertTracker() {
                 <span className="text-[10px] text-slate-500">applies to Services &amp; Base Rate</span>
               )}
             </div>
-            <div className={`grid grid-cols-5 gap-1.5 ${autoMultiplier ? "opacity-70" : ""}`}>
+            {/* Multiplier buttons stay within the hero card's inner width.
+                `min-w-0` on the grid prevents long labels from forcing horizontal overflow. */}
+            <div className={`grid grid-cols-5 gap-1.5 min-w-0 ${autoMultiplier ? "opacity-70" : ""}`}>
               {MULTIPLIERS.map((m) => {
                 const label = m > 0 ? `+${m * 100}%` : m === 0 ? "0%" : `${m * 100}%`
                 const isActive = globalMultiplier === m
@@ -949,41 +1004,44 @@ export default function TechExpertTracker() {
           </div>
         </section>
 
-        {/* Metric chips: 4 categories — 2x2 on mobile, 4-col on larger screens */}
-        <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
-          <MetricChip
-            label="Services"
-            value={monthTotals.services}
-            color={SERVICES_COLOR}
-            fraction={fracServices}
-            icon={<Briefcase className="w-3.5 h-3.5" />}
-            multiplier={globalMultiplier}
-            showMultiplierDelta
-          />
-          <MetricChip
-            label="Base Rate"
-            value={monthTotals.base}
-            color={BASE_COLOR}
-            fraction={fracBase}
-            icon={<CheckCircle2 className="w-3.5 h-3.5" />}
-            multiplier={globalMultiplier}
-            showMultiplierDelta
-          />
-          <MetricChip
-            label="Trading"
-            value={monthTotals.trading}
-            color={TRADING_COLOR}
-            fraction={fracTrade}
-            icon={<Coins className="w-3.5 h-3.5" />}
-          />
-          <MetricChip
-            label="Tea"
-            value={monthTotals.tea}
-            color={TEA_COLOR}
-            fraction={fracTea}
-            icon={<Coffee className="w-3.5 h-3.5" />}
-          />
-        </section>
+        {/* Metric chips: 4 categories — only rendered in "detailed" layout mode.
+            In compact mode, the legend next to the donut already conveys per-category totals. */}
+        {layoutMode === "detailed" && (
+          <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+            <MetricChip
+              label="Services"
+              value={monthTotals.services}
+              color={SERVICES_COLOR}
+              fraction={fracServices}
+              icon={<Briefcase className="w-3.5 h-3.5" />}
+              multiplier={globalMultiplier}
+              showMultiplierDelta
+            />
+            <MetricChip
+              label="Base Rate"
+              value={monthTotals.base}
+              color={BASE_COLOR}
+              fraction={fracBase}
+              icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+              multiplier={globalMultiplier}
+              showMultiplierDelta
+            />
+            <MetricChip
+              label="Trading"
+              value={monthTotals.trading}
+              color={TRADING_COLOR}
+              fraction={fracTrade}
+              icon={<Coins className="w-3.5 h-3.5" />}
+            />
+            <MetricChip
+              label="Tea"
+              value={monthTotals.tea}
+              color={TEA_COLOR}
+              fraction={fracTea}
+              icon={<Coffee className="w-3.5 h-3.5" />}
+            />
+          </section>
+        )}
 
         {/* Input Form — operates on the SELECTED DATE draft */}
         <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4 mb-4 space-y-4">
@@ -997,11 +1055,54 @@ export default function TechExpertTracker() {
             </span>
           </div>
 
-          {/* Services input */}
+          {/* Services input — base-rate is now a compact "status LED" toggle on the label row,
+              replacing the previous bulky full-width card. The dot acts as the toggle button. */}
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-slate-400">
-              Total services amount <span className="text-slate-500">(× 3.5%)</span>
-            </label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-medium text-slate-400">
+                Total services amount <span className="text-slate-500">(× 3.5%)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => updateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
+                aria-pressed={currentRecord.hasBaseRate}
+                title={
+                  currentRecord.hasBaseRate
+                    ? "Base rate ON — adds +400 UAH (multiplier applies). Click to disable."
+                    : "Base rate OFF — click to add +400 UAH base shift rate."
+                }
+                className={`group flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full border transition-all ${
+                  currentRecord.hasBaseRate
+                    ? "border-cyan-300/40 bg-cyan-400/10 shadow-[0_0_14px_-4px_rgba(34,211,238,0.7)]"
+                    : "border-white/10 bg-white/5 hover:border-white/20"
+                }`}
+              >
+                {/* Status LED — glowing electric cyan when ON, muted slate when OFF */}
+                <span className="relative flex items-center justify-center w-3 h-3">
+                  {currentRecord.hasBaseRate && (
+                    <span className="absolute inset-0 rounded-full bg-cyan-400/60 animate-ping" />
+                  )}
+                  <span
+                    className={`relative w-2 h-2 rounded-full transition-colors ${
+                      currentRecord.hasBaseRate ? "bg-cyan-300" : "bg-slate-600 group-hover:bg-slate-500"
+                    }`}
+                    style={
+                      currentRecord.hasBaseRate
+                        ? { boxShadow: "0 0 8px rgba(34,211,238,0.95), 0 0 14px rgba(6,182,212,0.7)" }
+                        : undefined
+                    }
+                  />
+                </span>
+                <span
+                  className={`text-[10px] font-semibold tabular-nums tracking-tight ${
+                    currentRecord.hasBaseRate ? "text-cyan-200" : "text-slate-400"
+                  }`}
+                >
+                  +400 UAH
+                </span>
+                <span className="text-[9px] text-slate-500 hidden sm:inline">base rate</span>
+              </button>
+            </div>
             <input
               type="number"
               inputMode="decimal"
@@ -1011,33 +1112,6 @@ export default function TechExpertTracker() {
               className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
             />
           </div>
-
-          {/* Base rate toggle */}
-          <button
-            type="button"
-            onClick={() => updateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
-            className={`w-full flex items-center justify-between p-3.5 rounded-2xl border transition-all ${
-              currentRecord.hasBaseRate
-                ? "bg-emerald-500/10 border-emerald-400/30 shadow-[0_0_24px_-8px_rgba(34,197,94,0.6)]"
-                : "bg-white/5 border-white/10"
-            }`}
-          >
-            <div className="flex flex-col items-start">
-              <span className="text-sm font-medium text-white">Shift Base Rate</span>
-              <span className="text-[11px] text-slate-400">Adds +400 UAH (multiplier applies)</span>
-            </div>
-            <div
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                currentRecord.hasBaseRate ? "bg-emerald-500" : "bg-slate-700"
-              }`}
-            >
-              <span
-                className={`absolute top-[2px] left-[2px] w-5 h-5 rounded-full bg-white transition-transform ${
-                  currentRecord.hasBaseRate ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
-            </div>
-          </button>
 
           {/* Trading + Tea inputs side-by-side on mobile too */}
           <div className="grid grid-cols-2 gap-3">
@@ -1187,6 +1261,8 @@ export default function TechExpertTracker() {
           autoMultiplier={autoMultiplier}
           onToggleAutoMultiplier={updateAutoMultiplier}
           forecastPct={forecastPct}
+          layoutMode={layoutMode}
+          onChangeLayoutMode={updateLayoutMode}
           onClose={() => setSettingsOpen(false)}
           onExport={exportData}
           onImport={triggerImport}
@@ -1601,6 +1677,8 @@ function SettingsModal({
   autoMultiplier,
   onToggleAutoMultiplier,
   forecastPct,
+  layoutMode,
+  onChangeLayoutMode,
   onClose,
   onExport,
   onImport,
@@ -1611,6 +1689,8 @@ function SettingsModal({
   autoMultiplier: boolean
   onToggleAutoMultiplier: (next: boolean) => void
   forecastPct: number
+  layoutMode: LayoutMode
+  onChangeLayoutMode: (next: LayoutMode) => void
   onClose: () => void
   onExport: () => void
   onImport: () => void
@@ -1746,6 +1826,47 @@ function SettingsModal({
 
             <div className="text-[10px] text-slate-500 leading-relaxed">
               Bands: &lt;81% → -20%, 81–90% → -10%, 91–109% → 0%, 110–119% → +10%, ≥120% → +20%.
+            </div>
+          </div>
+
+          {/* Dashboard layout — segmented control: Compact (legend visible) vs Detailed (cards visible) */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <LayoutGrid className="w-4 h-4 text-blue-300" />
+              <span className="text-sm font-semibold text-white">Dashboard Layout</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              <span className="text-slate-200 font-medium">Compact</span> shows a legend next to the chart and
+              hides the summary cards. <span className="text-slate-200 font-medium">Detailed</span> hides the
+              legend and shows the full summary cards row.
+            </p>
+            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-white/5 border border-white/10">
+              <button
+                type="button"
+                onClick={() => onChangeLayoutMode("compact")}
+                aria-pressed={layoutMode === "compact"}
+                className={`flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold transition-all ${
+                  layoutMode === "compact"
+                    ? "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                    : "text-slate-300 hover:bg-white/5"
+                }`}
+              >
+                <Rows3 className="w-3.5 h-3.5" />
+                Compact
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeLayoutMode("detailed")}
+                aria-pressed={layoutMode === "detailed"}
+                className={`flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold transition-all ${
+                  layoutMode === "detailed"
+                    ? "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                    : "text-slate-300 hover:bg-white/5"
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                Detailed
+              </button>
             </div>
           </div>
 
