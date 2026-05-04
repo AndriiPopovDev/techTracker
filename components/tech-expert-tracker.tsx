@@ -100,6 +100,39 @@ const MONTH_NAMES = [
 
 const monthKeyOf = (dateStr: string) => dateStr.slice(0, 7) // "YYYY-MM"
 
+// Custom in-slice label for the donut chart — shows % inside the ring.
+// Uses white text with a subtle shadow so it contrasts against any slice color.
+const renderPieSliceLabel = (props: any) => {
+  const { cx, cy, midAngle, innerRadius, outerRadius, percent } = props
+  // Hide labels for very small slices to avoid visual noise/overlap
+  if (!percent || percent < 0.06) return null
+  const RADIAN = Math.PI / 180
+  // Place the label in the visual middle of the ring (between inner and outer radii)
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.5
+  const x = cx + radius * Math.cos(-midAngle * RADIAN)
+  const y = cy + radius * Math.sin(-midAngle * RADIAN)
+  return (
+    <text
+      x={x}
+      y={y}
+      fill="#ffffff"
+      textAnchor="middle"
+      dominantBaseline="central"
+      style={{
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: 0.2,
+        paintOrder: "stroke",
+        stroke: "rgba(0,0,0,0.55)",
+        strokeWidth: 2,
+        strokeLinejoin: "round",
+      }}
+    >
+      {`${Math.round(percent * 100)}%`}
+    </text>
+  )
+}
+
 // Helpers to read legacy entries safely
 const entryRawServices = (e: HistoryEntry) => Number(e.servicesRaw) || 0
 const entryRawBase = (e: HistoryEntry) =>
@@ -520,6 +553,9 @@ export default function TechExpertTracker() {
                       dataKey="value"
                       stroke="none"
                       cornerRadius={4}
+                      labelLine={false}
+                      label={renderPieSliceLabel}
+                      isAnimationActive={false}
                     >
                       {chartData.map((entry) => (
                         <Cell key={entry.name} fill={entry.color} />
@@ -709,6 +745,8 @@ export default function TechExpertTracker() {
             color={SERVICES_COLOR}
             fraction={fracServices}
             icon={<Briefcase className="w-3.5 h-3.5" />}
+            multiplier={globalMultiplier}
+            showMultiplierDelta
           />
           <MetricChip
             label="Base Rate"
@@ -716,6 +754,8 @@ export default function TechExpertTracker() {
             color={BASE_COLOR}
             fraction={fracBase}
             icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+            multiplier={globalMultiplier}
+            showMultiplierDelta
           />
           <MetricChip
             label="Trading"
@@ -950,13 +990,50 @@ function MetricChip({
   color,
   fraction,
   icon,
+  multiplier = 0,
+  showMultiplierDelta = false,
 }: {
   label: string
   value: number
   color: string
   fraction: number
   icon: React.ReactNode
+  multiplier?: number
+  showMultiplierDelta?: boolean
 }) {
+  // The mini progress bar shows this card's share of the monthly total. When the
+  // multiplier is non-zero AND this is a multiplier-affected card (Services / Base Rate),
+  // we visually break out the delta:
+  //   - Positive multiplier: split the colored fill so the bonus tail is shown in green.
+  //   - Negative multiplier: append a red striped segment after the colored fill to
+  //     represent the amount that was subtracted (the "phantom loss").
+  const hasDelta = showMultiplierDelta && multiplier !== 0 && value > 0
+  const isPositive = multiplier > 0
+  const isNegative = multiplier < 0
+
+  // Width of the value segment in % of total bar. Keeps the existing min-width behavior.
+  const valueWidthPct = Math.max(fraction * 100, value > 0 ? 6 : 0)
+
+  // value already has the multiplier baked in (value = raw * (1 + m)).
+  // For positive m: split valueWidthPct into base (= valueWidthPct / (1+m)) and bonus tail.
+  // For negative m: keep colored fill at valueWidthPct, append red striped loss segment
+  //   sized so colored + loss = "what would-have-been" without the negative multiplier.
+  let baseWidthPct = valueWidthPct
+  let bonusWidthPct = 0
+  let lossWidthPct = 0
+
+  if (hasDelta) {
+    if (isPositive) {
+      baseWidthPct = valueWidthPct / (1 + multiplier)
+      bonusWidthPct = Math.max(valueWidthPct - baseWidthPct, 0)
+    } else if (isNegative) {
+      // multiplier is negative → (-multiplier)/(1+multiplier) > 0
+      lossWidthPct = (valueWidthPct * -multiplier) / (1 + multiplier)
+      // Cap so colored + loss never exceeds 100% of the bar width
+      lossWidthPct = Math.min(lossWidthPct, Math.max(0, 100 - valueWidthPct))
+    }
+  }
+
   return (
     <div className="rounded-2xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-3">
       <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-medium" style={{ color }}>
@@ -967,15 +1044,37 @@ function MetricChip({
         {value.toFixed(0)}
         <span className="text-[10px] font-medium text-slate-500 ml-1">UAH</span>
       </div>
-      <div className="mt-2 h-1 w-full rounded-full bg-white/5 overflow-hidden">
+      <div className="mt-2 h-1 w-full rounded-full bg-white/5 overflow-hidden flex">
         <div
-          className="h-full rounded-full transition-all duration-500"
+          className="h-full transition-all duration-500"
           style={{
-            width: `${Math.max(fraction * 100, value > 0 ? 6 : 0)}%`,
+            width: `${baseWidthPct}%`,
             background: color,
             boxShadow: `0 0 10px ${color}`,
           }}
         />
+        {bonusWidthPct > 0 && (
+          <div
+            className="h-full transition-all duration-500"
+            style={{
+              width: `${bonusWidthPct}%`,
+              background: "#22c55e",
+              boxShadow: "0 0 10px rgba(34,197,94,0.85)",
+            }}
+            aria-label={`Multiplier bonus +${Math.round(multiplier * 100)}%`}
+          />
+        )}
+        {lossWidthPct > 0 && (
+          <div
+            className="h-full transition-all duration-500"
+            style={{
+              width: `${lossWidthPct}%`,
+              backgroundImage:
+                "repeating-linear-gradient(45deg, rgba(239,68,68,0.9) 0 3px, rgba(239,68,68,0.35) 3px 6px)",
+            }}
+            aria-label={`Multiplier penalty ${Math.round(multiplier * 100)}%`}
+          />
+        )}
       </div>
     </div>
   )
