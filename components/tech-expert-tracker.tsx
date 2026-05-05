@@ -2,32 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react"
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts"
-import {
-  Calendar,
-  Wallet,
-  Briefcase,
-  Percent,
-  TrendingUp,
-  TrendingDown,
-  Coins,
-  Coffee,
-  CheckCircle2,
-  History as HistoryIcon,
-  Sparkles,
-  X,
-  ChevronLeft,
-  ChevronRight,
-  Pencil,
-  Trash2,
-  Download,
-  Upload,
-  Target,
-  Settings as SettingsIcon,
-  Lock,
-  Minus,
-  LayoutGrid,
-  Rows3,
-} from "lucide-react"
+import { Calendar, Wallet, Briefcase, Percent, TrendingUp, TrendingDown, Coins, Coffee, CircleCheck as CheckCircle2, History as HistoryIcon, Sparkles, X, ChevronLeft, ChevronRight, Pencil, Trash2, Download, Upload, Target, Settings as SettingsIcon, Lock, Minus, LayoutGrid, Rows3 } from "lucide-react"
 
 const SERVICES_COLOR = "#3b82f6" // blue
 const BASE_COLOR = "#22c55e" // green
@@ -1879,7 +1854,7 @@ function SettingsModal({
                 onClick={onImport}
                 className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 transition-colors"
               >
-                <Upload className="w-3.5 h-3.5" />
+                <Download className="w-3.5 h-3.5" />
                 Import JSON
               </button>
               <button
@@ -1887,7 +1862,7 @@ function SettingsModal({
                 onClick={onExport}
                 className="flex items-center justify-center gap-1.5 py-2.5 rounded-2xl bg-blue-500/15 hover:bg-blue-500/25 border border-blue-400/30 text-xs font-semibold text-blue-200 transition-colors"
               >
-                <Download className="w-3.5 h-3.5" />
+                <Upload className="w-3.5 h-3.5" />
                 Export JSON
               </button>
             </div>
