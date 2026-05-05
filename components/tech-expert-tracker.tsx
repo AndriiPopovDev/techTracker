@@ -776,7 +776,7 @@ export default function TechExpertTracker() {
               className={`self-center ${
                 layoutMode === "detailed"
                   ? "flex-1 min-w-0 text-center"
-                  : "shrink-0 text-right pl-1"
+                  : "shrink-0 text-right pl-1 mr-10"
               }`}
             >
               <div
