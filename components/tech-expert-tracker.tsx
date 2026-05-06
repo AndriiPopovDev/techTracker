@@ -644,7 +644,7 @@ export default function TechExpertTracker() {
           </div>
 
           {/* Side-by-side: donut anchor on left, vertical Legend in the middle, Total Balance on the right */}
-          <div className="relative flex items-center gap-2.5 sm:gap-3">
+          <div className="relative flex items-center gap-2 sm:gap-2.5">
             {/* Donut: visual anchor on the left. No external labels — clean ring with empty center.
                 `overflow-visible` on the SVG + small inner margin lets the bonusGlow filter
                 bleed past the chart bounds without being clipped at the bottom edge. */}
@@ -733,7 +733,7 @@ export default function TechExpertTracker() {
                 Each row: dot + colored icon + "Name:" + final UAH + subtle delta.
                 Name and value sit close together (gap-1) for a tight, readable list. */}
             {layoutMode === "compact" && (
-              <ul className="flex-1 min-w-0 self-center space-y-1.5 py-1">
+              <ul className="flex-1 min-w-0 self-center space-y-1 py-1">
                 {legendItems.length === 0 ? (
                   <li className="text-[11px] text-slate-500">No data yet</li>
                 ) : (
@@ -773,30 +773,33 @@ export default function TechExpertTracker() {
                 · Detailed: legend is hidden, so this block grows (`flex-1`) and centers itself
                   next to the donut, producing the balanced 2-column look. */}
             <div
-              className={`self-center ${
+              className={`self-center flex flex-col items-end ${
                 layoutMode === "detailed"
                   ? "flex-1 min-w-0 text-center"
-                  : "shrink-0 text-right pl-1 mr-10"
+                  : "shrink-0"
               }`}
             >
-              <div
-                className={`font-bold text-white tabular-nums tracking-tight leading-none ${
-                  layoutMode === "detailed" ? "text-3xl sm:text-4xl" : "text-2xl sm:text-3xl"
-                }`}
-              >
-                {fmtUah(monthTotals.total)}
-              </div>
-              <div className="mt-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-blue-200/70">
-                UAH
+              <div className={`flex items-baseline gap-1.5 ${layoutMode === "detailed" ? "justify-center w-full" : ""}`}>
+                <div
+                  className={`font-bold text-white tabular-nums tracking-tight leading-none ${
+                    layoutMode === "detailed" ? "text-3xl sm:text-4xl" : "text-2xl sm:text-3xl"
+                  }`}
+                >
+                  {fmtUah(monthTotals.total)}
+                </div>
+                <div className="text-xs sm:text-sm font-semibold text-cyan-300/60">
+                  ₴
+                </div>
               </div>
             </div>
           </div>
 
           {/* Meta row — trend, shifts/avg, multiplier — moved below the chart row for breathing room.
-              In detailed mode it centers under the (now-centered) Total Balance value. */}
+              In detailed mode it centers under the (now-centered) Total Balance value.
+              In compact mode it stays left-aligned and tight. */}
           <div
             className={`relative mt-2 flex items-center gap-1.5 flex-wrap text-[11px] ${
-              layoutMode === "detailed" ? "justify-center" : ""
+              layoutMode === "detailed" ? "justify-center" : "justify-end sm:justify-start"
             }`}
           >
             {trendDeltaPct === null ? (
