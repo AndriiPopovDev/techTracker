@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useMemo, useRef } from "react"
+import { flushSync } from "react-dom"
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts"
 import { Calendar, Wallet, Briefcase, Percent, TrendingUp, TrendingDown, Coins, Coffee, CircleCheck as CheckCircle2, History as HistoryIcon, Sparkles, X, ChevronLeft, ChevronRight, Pencil, Trash2, Download, Upload, Target, Settings as SettingsIcon, Lock, Minus, LayoutGrid, Rows3 } from "lucide-react"
 
@@ -108,9 +109,11 @@ export default function TechExpertTracker() {
   const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7))
   const [autoMultiplier, setAutoMultiplier] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [shiftModalOpen, setShiftModalOpen] = useState(false)
   // Compact: legend next to chart, summary cards hidden. Detailed: cards visible, legend hidden.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("compact")
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const shiftModalServicesInputRef = useRef<HTMLInputElement>(null)
 
   // Hydrate from localStorage
   useEffect(() => {
@@ -300,6 +303,27 @@ export default function TechExpertTracker() {
     setJustSaved(true)
     setTimeout(() => setJustSaved(false), 1800)
   }
+
+  const openShiftModal = () => {
+    // Always default to today when starting a new shift entry from the FAB.
+    const today = new Date().toISOString().split("T")[0]
+    // iOS Safari often blocks programmatic keyboard unless focus happens
+    // synchronously within the user gesture. Flush render, then focus.
+    flushSync(() => {
+      setSelectedDate(today)
+      setShiftModalOpen(true)
+    })
+    shiftModalServicesInputRef.current?.focus()
+  }
+
+  // When the modal opens, focus the first input so iOS shows the keyboard.
+  useEffect(() => {
+    if (!shiftModalOpen) return
+    const id = globalThis.setTimeout(() => {
+      shiftModalServicesInputRef.current?.focus()
+    }, 50)
+    return () => globalThis.clearTimeout(id)
+  }, [shiftModalOpen])
 
   const deleteEntry = (id: string) => {
     if (typeof window !== "undefined" && !window.confirm("Delete this shift? This cannot be undone.")) return
@@ -1021,132 +1045,6 @@ export default function TechExpertTracker() {
           </section>
         )}
 
-        {/* Input Form — operates on the SELECTED DATE draft */}
-        <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4 mb-4 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Briefcase className="w-4 h-4 text-blue-300" />
-              Shift Details
-            </h2>
-            <span className="text-[11px] text-slate-400 tabular-nums">
-              Today: {draftTotal.toFixed(2)} UAH
-            </span>
-          </div>
-
-          {/* Services input — base-rate is now a compact "status LED" toggle on the label row,
-              replacing the previous bulky full-width card. The dot acts as the toggle button. */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <label className="text-xs font-medium text-slate-400">
-                Total services amount <span className="text-slate-500">(× 3.5%)</span>
-              </label>
-              <button
-                type="button"
-                onClick={() => updateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
-                aria-pressed={currentRecord.hasBaseRate}
-                title={
-                  currentRecord.hasBaseRate
-                    ? "Base rate ON — adds +400 UAH (multiplier applies). Click to disable."
-                    : "Base rate OFF — click to add +400 UAH base shift rate."
-                }
-                className={`group flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full border transition-all ${
-                  currentRecord.hasBaseRate
-                    ? "border-cyan-300/40 bg-cyan-400/10 shadow-[0_0_14px_-4px_rgba(34,211,238,0.7)]"
-                    : "border-white/10 bg-white/5 hover:border-white/20"
-                }`}
-              >
-                {/* Status LED — glowing electric cyan when ON, muted slate when OFF */}
-                <span className="relative flex items-center justify-center w-3 h-3">
-                  {currentRecord.hasBaseRate && (
-                    <span className="absolute inset-0 rounded-full bg-cyan-400/60 animate-ping" />
-                  )}
-                  <span
-                    className={`relative w-2 h-2 rounded-full transition-colors ${
-                      currentRecord.hasBaseRate ? "bg-cyan-300" : "bg-slate-600 group-hover:bg-slate-500"
-                    }`}
-                    style={
-                      currentRecord.hasBaseRate
-                        ? { boxShadow: "0 0 8px rgba(34,211,238,0.95), 0 0 14px rgba(6,182,212,0.7)" }
-                        : undefined
-                    }
-                  />
-                </span>
-                <span
-                  className={`text-[10px] font-semibold tabular-nums tracking-tight ${
-                    currentRecord.hasBaseRate ? "text-cyan-200" : "text-slate-400"
-                  }`}
-                >
-                  +400 UAH
-                </span>
-                <span className="text-[9px] text-slate-500 hidden sm:inline">base rate</span>
-              </button>
-            </div>
-            <input
-              type="number"
-              inputMode="decimal"
-              value={currentRecord.servicesRaw}
-              onChange={(e) => updateRecord("servicesRaw", e.target.value)}
-              placeholder="0"
-              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
-            />
-          </div>
-
-          {/* Trading + Tea inputs side-by-side on mobile too */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
-                <Coins className="w-3 h-3" style={{ color: TRADING_COLOR }} />
-                Trading
-              </label>
-              <input
-                type="number"
-                inputMode="decimal"
-                value={currentRecord.tradeEarnings}
-                onChange={(e) => updateRecord("tradeEarnings", e.target.value)}
-                placeholder="0"
-                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
-                <Coffee className="w-3 h-3" style={{ color: TEA_COLOR }} />
-                Tea (Tips)
-              </label>
-              <input
-                type="number"
-                inputMode="decimal"
-                value={currentRecord.teaEarnings}
-                onChange={(e) => updateRecord("teaEarnings", e.target.value)}
-                placeholder="0"
-                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
-              />
-            </div>
-          </div>
-
-          {/* Confirm Shift */}
-          <button
-            onClick={confirmShift}
-            disabled={draftTotal <= 0}
-            className={`relative w-full py-4 rounded-2xl font-semibold text-base transition-all flex items-center justify-center gap-2 ${
-              draftTotal > 0
-                ? "bg-blue-500 hover:bg-blue-400 text-white shadow-[0_0_30px_-4px_rgba(59,130,246,0.7),0_8px_24px_-8px_rgba(59,130,246,0.6)] active:scale-[0.98]"
-                : "bg-slate-800 text-slate-600 cursor-not-allowed"
-            }`}
-          >
-            {justSaved ? (
-              <>
-                <CheckCircle2 className="w-5 h-5" />
-                Shift Saved
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="w-5 h-5" />
-                Confirm Shift
-              </>
-            )}
-          </button>
-        </section>
-
         {/* Recent History (this month) */}
         <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4">
           <div className="flex items-center justify-between mb-3">
@@ -1216,6 +1114,33 @@ export default function TechExpertTracker() {
           )}
         </section>
       </div>
+
+      {/* Floating Action Button — quick access to Shift Details */}
+      <button
+        type="button"
+        onClick={openShiftModal}
+        aria-label="Add shift"
+        className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-2xl bg-blue-500 text-white shadow-[0_0_28px_-6px_rgba(59,130,246,0.85),0_10px_26px_-10px_rgba(0,0,0,0.7)] border border-blue-300/30 hover:bg-blue-400 active:scale-[0.98] transition-all flex items-center justify-center"
+      >
+        <span className="sr-only">Add shift</span>
+        <Briefcase className="w-5 h-5" />
+      </button>
+
+      {shiftModalOpen && (
+        <ShiftDetailsModal
+          selectedDate={selectedDate}
+          draftTotal={draftTotal}
+          justSaved={justSaved}
+          currentRecord={currentRecord}
+          onClose={() => setShiftModalOpen(false)}
+          onUpdateRecord={updateRecord}
+          onConfirmShift={() => {
+            confirmShift()
+            setShiftModalOpen(false)
+          }}
+          servicesInputRef={shiftModalServicesInputRef}
+        />
+      )}
 
       {historyOpen && (
         <HistoryModal
@@ -1870,6 +1795,179 @@ function SettingsModal({
               </button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ShiftDetailsModal({
+  selectedDate,
+  draftTotal,
+  justSaved,
+  currentRecord,
+  onClose,
+  onUpdateRecord,
+  onConfirmShift,
+  servicesInputRef,
+}: {
+  selectedDate: string
+  draftTotal: number
+  justSaved: boolean
+  currentRecord: DraftRecord
+  onClose: () => void
+  onUpdateRecord: (field: keyof DraftRecord, value: any) => void
+  onConfirmShift: () => void
+  servicesInputRef: React.RefObject<HTMLInputElement | null>
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Shift details"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full sm:max-w-md max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shrink-0">
+              <Briefcase className="w-4 h-4 text-blue-300" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-white truncate">Shift Details</h3>
+              <p className="text-[11px] text-slate-400 truncate">{selectedDate}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close shift details"
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+          >
+            <X className="w-4 h-4 text-slate-300" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-slate-400 tabular-nums">Today: {draftTotal.toFixed(2)} UAH</span>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-medium text-slate-400">
+                Total services amount <span className="text-slate-500">(× 3.5%)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => onUpdateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
+                aria-pressed={currentRecord.hasBaseRate}
+                title={
+                  currentRecord.hasBaseRate
+                    ? "Base rate ON — adds +400 UAH (multiplier applies). Click to disable."
+                    : "Base rate OFF — click to add +400 UAH base shift rate."
+                }
+                className={`group flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full border transition-all ${
+                  currentRecord.hasBaseRate
+                    ? "border-cyan-300/40 bg-cyan-400/10 shadow-[0_0_14px_-4px_rgba(34,211,238,0.7)]"
+                    : "border-white/10 bg-white/5 hover:border-white/20"
+                }`}
+              >
+                <span className="relative flex items-center justify-center w-3 h-3">
+                  {currentRecord.hasBaseRate && (
+                    <span className="absolute inset-0 rounded-full bg-cyan-400/60 animate-ping" />
+                  )}
+                  <span
+                    className={`relative w-2 h-2 rounded-full transition-colors ${
+                      currentRecord.hasBaseRate ? "bg-cyan-300" : "bg-slate-600 group-hover:bg-slate-500"
+                    }`}
+                    style={
+                      currentRecord.hasBaseRate
+                        ? { boxShadow: "0 0 8px rgba(34,211,238,0.95), 0 0 14px rgba(6,182,212,0.7)" }
+                        : undefined
+                    }
+                  />
+                </span>
+                <span
+                  className={`text-[10px] font-semibold tabular-nums tracking-tight ${
+                    currentRecord.hasBaseRate ? "text-cyan-200" : "text-slate-400"
+                  }`}
+                >
+                  +400 UAH
+                </span>
+                <span className="text-[9px] text-slate-500 hidden sm:inline">base rate</span>
+              </button>
+            </div>
+            <input
+              ref={servicesInputRef}
+              autoFocus
+              type="number"
+              inputMode="decimal"
+              value={currentRecord.servicesRaw}
+              onChange={(e) => onUpdateRecord("servicesRaw", e.target.value)}
+              placeholder="0"
+              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
+                <Coins className="w-3 h-3" style={{ color: TRADING_COLOR }} />
+                Trading
+              </label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={currentRecord.tradeEarnings}
+                onChange={(e) => onUpdateRecord("tradeEarnings", e.target.value)}
+                placeholder="0"
+                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
+                <Coffee className="w-3 h-3" style={{ color: TEA_COLOR }} />
+                Tea (Tips)
+              </label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={currentRecord.teaEarnings}
+                onChange={(e) => onUpdateRecord("teaEarnings", e.target.value)}
+                placeholder="0"
+                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-white/10">
+          <button
+            onClick={onConfirmShift}
+            disabled={draftTotal <= 0}
+            className={`relative w-full py-4 rounded-2xl font-semibold text-base transition-all flex items-center justify-center gap-2 ${
+              draftTotal > 0
+                ? "bg-blue-500 hover:bg-blue-400 text-white shadow-[0_0_30px_-4px_rgba(59,130,246,0.7),0_8px_24px_-8px_rgba(59,130,246,0.6)] active:scale-[0.98]"
+                : "bg-slate-800 text-slate-600 cursor-not-allowed"
+            }`}
+          >
+            {justSaved ? (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                Shift Saved
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                Confirm Shift
+              </>
+            )}
+          </button>
         </div>
       </div>
     </div>
