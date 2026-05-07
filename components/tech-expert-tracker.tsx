@@ -425,13 +425,11 @@ export default function TechExpertTracker() {
   // Prevent background (body) scroll while modal is open (especially iOS).
   useEffect(() => {
     if (!shiftModalOpen) return
-    const prevOverflow = document.body.style.overflow
-    const prevTouch = document.body.style.touchAction
-    document.body.style.overflow = "hidden"
-    document.body.style.touchAction = "none"
+    const body = document.body
+    const prevOverflow = body.style.overflow
+    body.style.overflow = "hidden"
     return () => {
-      document.body.style.overflow = prevOverflow
-      document.body.style.touchAction = prevTouch
+      body.style.overflow = prevOverflow
     }
   }, [shiftModalOpen])
 
@@ -1906,6 +1904,7 @@ function ShiftDetailsModal({
   onConfirmShift: () => void
   servicesInputRef: React.RefObject<HTMLInputElement | null>
 }) {
+  const panelRef = useRef<HTMLDivElement>(null)
   const tradingInputRef = useRef<HTMLInputElement>(null)
   const teaInputRef = useRef<HTMLInputElement>(null)
 
@@ -1943,6 +1942,18 @@ function ShiftDetailsModal({
   const backspaceActive = () => updateActive(activeExpr.slice(0, -1))
   const clearActive = () => updateActive("")
 
+  // iOS: prevent background rubber-band scroll without blurring inputs.
+  useEffect(() => {
+    const onTouchMove = (e: TouchEvent) => {
+      const panel = panelRef.current
+      const target = e.target as Node | null
+      if (!panel || !target) return
+      if (!panel.contains(target)) e.preventDefault()
+    }
+    document.addEventListener("touchmove", onTouchMove, { passive: false })
+    return () => document.removeEventListener("touchmove", onTouchMove)
+  }, [])
+
   return (
     <div
       role="dialog"
@@ -1950,10 +1961,12 @@ function ShiftDetailsModal({
       aria-label="Shift details"
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm overflow-hidden overscroll-none"
       onClick={onClose}
+      onTouchMove={(e) => e.preventDefault()}
     >
       <div
         className="w-full sm:max-w-md h-[88dvh] sm:max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
+        ref={panelRef}
       >
         <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0 gap-2">
           <div className="flex items-center gap-2 min-w-0">
