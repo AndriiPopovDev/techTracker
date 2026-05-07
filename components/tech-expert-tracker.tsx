@@ -1151,8 +1151,6 @@ export default function TechExpertTracker() {
           onClose={() => setHistoryOpen(false)}
           onDelete={deleteEntry}
           onEdit={editEntry}
-          onExport={exportData}
-          onImport={triggerImport}
         />
       )}
 
@@ -1299,8 +1297,6 @@ function HistoryModal({
   onClose,
   onDelete,
   onEdit,
-  onExport,
-  onImport,
 }: {
   history: HistoryEntry[]
   monthKey: string
@@ -1309,8 +1305,6 @@ function HistoryModal({
   onClose: () => void
   onDelete: (id: string) => void
   onEdit: (entry: HistoryEntry) => void
-  onExport: () => void
-  onImport: () => void
 }) {
   const [year, month] = monthKey.split("-").map(Number)
   const label = `${MONTH_NAMES[month - 1]} ${year}`
@@ -1381,28 +1375,10 @@ function HistoryModal({
             </div>
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-white truncate">Shift History</h3>
-              <p className="text-[11px] text-slate-400 truncate">Edit, delete, or export your data</p>
+              <p className="text-[11px] text-slate-400 truncate">Edit or delete shifts</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              aria-label="Import data"
-              onClick={onImport}
-              className="h-8 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-1.5 text-[11px] font-semibold text-slate-200 transition-colors"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              Import
-            </button>
-            <button
-              type="button"
-              aria-label="Export data"
-              onClick={onExport}
-              className="h-8 px-2.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-400/30 flex items-center gap-1.5 text-[11px] font-semibold text-blue-200 transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Export
-            </button>
             <button
               type="button"
               aria-label="Close history"
