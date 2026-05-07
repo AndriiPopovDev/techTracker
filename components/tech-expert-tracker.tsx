@@ -97,6 +97,100 @@ const entryTrading = (e: HistoryEntry) =>
   typeof e.tradeEarnings === "number" ? e.tradeEarnings : Number(e.trading) || 0
 const entryTea = (e: HistoryEntry) => Number(e.teaEarnings) || 0
 
+function evalMiniExpr(expr: string): { ok: true; value: number } | { ok: false; error: string } {
+  // Safe mini evaluator for + - * / and parentheses (no eval()).
+  const cleaned = expr.replace(/\s+/g, "")
+  if (!cleaned) return { ok: false, error: "Empty" }
+  if (cleaned.length > 64) return { ok: false, error: "Too long" }
+  if (/[^0-9+\-*/().]/.test(cleaned)) return { ok: false, error: "Invalid chars" }
+
+  type Tok = { t: "num"; v: number } | { t: "op"; v: string } | { t: "lp" } | { t: "rp" }
+  const tokens: Tok[] = []
+
+  let i = 0
+  while (i < cleaned.length) {
+    const ch = cleaned[i]
+    if (ch === "(") {
+      tokens.push({ t: "lp" })
+      i++
+      continue
+    }
+    if (ch === ")") {
+      tokens.push({ t: "rp" })
+      i++
+      continue
+    }
+    if ("+-*/".includes(ch)) {
+      const prev = tokens[tokens.length - 1]
+      const isUnary = ch === "-" && (!prev || prev.t === "op" || prev.t === "lp")
+      if (isUnary) tokens.push({ t: "num", v: 0 })
+      tokens.push({ t: "op", v: ch })
+      i++
+      continue
+    }
+    if (/[0-9.]/.test(ch)) {
+      let j = i
+      while (j < cleaned.length && /[0-9.]/.test(cleaned[j])) j++
+      const raw = cleaned.slice(i, j)
+      if ((raw.match(/\./g) || []).length > 1) return { ok: false, error: "Bad number" }
+      const n = Number(raw)
+      if (!Number.isFinite(n)) return { ok: false, error: "Bad number" }
+      tokens.push({ t: "num", v: n })
+      i = j
+      continue
+    }
+    return { ok: false, error: "Parse error" }
+  }
+
+  const prec: Record<string, number> = { "+": 1, "-": 1, "*": 2, "/": 2 }
+  const output: Tok[] = []
+  const ops: Tok[] = []
+
+  for (const tok of tokens) {
+    if (tok.t === "num") output.push(tok)
+    else if (tok.t === "op") {
+      while (ops.length) {
+        const top = ops[ops.length - 1]
+        if (top.t === "op" && prec[top.v] >= prec[tok.v]) output.push(ops.pop()!)
+        else break
+      }
+      ops.push(tok)
+    } else if (tok.t === "lp") ops.push(tok)
+    else if (tok.t === "rp") {
+      while (ops.length && ops[ops.length - 1].t !== "lp") output.push(ops.pop()!)
+      if (!ops.length) return { ok: false, error: "Mismatched ()" }
+      ops.pop()
+    }
+  }
+  while (ops.length) {
+    const top = ops.pop()!
+    if (top.t === "lp") return { ok: false, error: "Mismatched ()" }
+    output.push(top)
+  }
+
+  const stack: number[] = []
+  for (const tok of output) {
+    if (tok.t === "num") stack.push(tok.v)
+    else if (tok.t === "op") {
+      const b = stack.pop()
+      const a = stack.pop()
+      if (a === undefined || b === undefined) return { ok: false, error: "Bad expr" }
+      let r = 0
+      if (tok.v === "+") r = a + b
+      if (tok.v === "-") r = a - b
+      if (tok.v === "*") r = a * b
+      if (tok.v === "/") {
+        if (b === 0) return { ok: false, error: "Divide by 0" }
+        r = a / b
+      }
+      if (!Number.isFinite(r)) return { ok: false, error: "Bad result" }
+      stack.push(r)
+    }
+  }
+  if (stack.length !== 1) return { ok: false, error: "Bad expr" }
+  return { ok: true, value: Number(stack[0].toFixed(6)) }
+}
+
 export default function TechExpertTracker() {
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split("T")[0])
   const [drafts, setDrafts] = useState<Record<string, DraftRecord>>({})
@@ -142,10 +236,13 @@ export default function TechExpertTracker() {
   const currentRecord: DraftRecord = drafts[selectedDate] || DEFAULT_DRAFT
 
   // Draft preview (today's pending shift) — also affected by global multiplier
-  const draftServicesRaw = Number(currentRecord.servicesRaw) || 0
+  const draftServicesEval = evalMiniExpr(String(currentRecord.servicesRaw ?? ""))
+  const draftServicesRaw = draftServicesEval.ok ? draftServicesEval.value : 0
   const draftBaseRaw = currentRecord.hasBaseRate ? 400 : 0
-  const draftTrading = Number(currentRecord.tradeEarnings) || 0
-  const draftTea = Number(currentRecord.teaEarnings) || 0
+  const draftTradingEval = evalMiniExpr(String(currentRecord.tradeEarnings ?? ""))
+  const draftTrading = draftTradingEval.ok ? draftTradingEval.value : 0
+  const draftTeaEval = evalMiniExpr(String(currentRecord.teaEarnings ?? ""))
+  const draftTea = draftTeaEval.ok ? draftTeaEval.value : 0
   const draftFinalServices = draftServicesRaw * 0.035 * (1 + globalMultiplier)
   const draftFinalBase = draftBaseRaw * (1 + globalMultiplier)
   const draftTotal = draftFinalServices + draftFinalBase + draftTrading + draftTea
@@ -323,6 +420,19 @@ export default function TechExpertTracker() {
       shiftModalServicesInputRef.current?.focus()
     }, 50)
     return () => globalThis.clearTimeout(id)
+  }, [shiftModalOpen])
+
+  // Prevent background (body) scroll while modal is open (especially iOS).
+  useEffect(() => {
+    if (!shiftModalOpen) return
+    const prevOverflow = document.body.style.overflow
+    const prevTouch = document.body.style.touchAction
+    document.body.style.overflow = "hidden"
+    document.body.style.touchAction = "none"
+    return () => {
+      document.body.style.overflow = prevOverflow
+      document.body.style.touchAction = prevTouch
+    }
   }, [shiftModalOpen])
 
   const deleteEntry = (id: string) => {
@@ -1796,16 +1906,53 @@ function ShiftDetailsModal({
   onConfirmShift: () => void
   servicesInputRef: React.RefObject<HTMLInputElement | null>
 }) {
+  const tradingInputRef = useRef<HTMLInputElement>(null)
+  const teaInputRef = useRef<HTMLInputElement>(null)
+
+  type CalcTarget = "servicesRaw" | "tradeEarnings" | "teaEarnings"
+  const [calcTarget, setCalcTarget] = useState<CalcTarget>("servicesRaw")
+  const [calcError, setCalcError] = useState<string | null>(null)
+
+  const activeExpr = useMemo(() => {
+    if (calcTarget === "servicesRaw") return String(currentRecord.servicesRaw ?? "")
+    if (calcTarget === "tradeEarnings") return String(currentRecord.tradeEarnings ?? "")
+    return String(currentRecord.teaEarnings ?? "")
+  }, [calcTarget, currentRecord.servicesRaw, currentRecord.tradeEarnings, currentRecord.teaEarnings])
+
+  const activePreview = useMemo(() => {
+    const expr = activeExpr.trim()
+    if (!expr) return null
+    if (!/[+\-*/()]/.test(expr)) return null
+    const res = evalMiniExpr(expr)
+    if (!res.ok) return null
+    return res.value
+  }, [activeExpr])
+
+  const focusTarget = () => {
+    if (calcTarget === "servicesRaw") servicesInputRef.current?.focus()
+    if (calcTarget === "tradeEarnings") tradingInputRef.current?.focus()
+    if (calcTarget === "teaEarnings") teaInputRef.current?.focus()
+  }
+
+  const updateActive = (next: string) => {
+    setCalcError(null)
+    onUpdateRecord(calcTarget, next)
+  }
+
+  const appendToActive = (s: string) => updateActive((activeExpr + s).slice(0, 32))
+  const backspaceActive = () => updateActive(activeExpr.slice(0, -1))
+  const clearActive = () => updateActive("")
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Shift details"
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm overflow-hidden overscroll-none"
       onClick={onClose}
     >
       <div
-        className="w-full sm:max-w-md max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl"
+        className="w-full sm:max-w-md h-[88dvh] sm:max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0 gap-2">
@@ -1828,7 +1975,7 @@ function ShiftDetailsModal({
           </button>
         </div>
 
-        <div className="overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 min-h-0 overflow-hidden p-4 space-y-4">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-slate-400 tabular-nums">Today: {draftTotal.toFixed(2)} UAH</span>
           </div>
@@ -1881,13 +2028,26 @@ function ShiftDetailsModal({
             <input
               ref={servicesInputRef}
               autoFocus
-              type="number"
+              type="text"
               inputMode="decimal"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               value={currentRecord.servicesRaw}
+              onFocus={() => {
+                setCalcTarget("servicesRaw")
+                setCalcError(null)
+              }}
               onChange={(e) => onUpdateRecord("servicesRaw", e.target.value)}
               placeholder="0"
               className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
             />
+            {calcTarget === "servicesRaw" && activePreview !== null && (
+              <div className="mt-1 text-[11px] text-slate-400 tabular-nums flex items-center justify-end">
+                <span className="text-blue-200/80">=</span>&nbsp;
+                <span className="text-blue-200 font-semibold">{activePreview}</span>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -1897,13 +2057,27 @@ function ShiftDetailsModal({
                 Trading
               </label>
               <input
-                type="number"
+                ref={tradingInputRef}
+                type="text"
                 inputMode="decimal"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 value={currentRecord.tradeEarnings}
+                onFocus={() => {
+                  setCalcTarget("tradeEarnings")
+                  setCalcError(null)
+                }}
                 onChange={(e) => onUpdateRecord("tradeEarnings", e.target.value)}
                 placeholder="0"
                 className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
               />
+              {calcTarget === "tradeEarnings" && activePreview !== null && (
+                <div className="mt-1 text-[11px] text-slate-400 tabular-nums flex items-center justify-end">
+                  <span className="text-amber-200/80">=</span>&nbsp;
+                  <span className="text-amber-200 font-semibold">{activePreview}</span>
+                </div>
+              )}
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
@@ -1911,18 +2085,70 @@ function ShiftDetailsModal({
                 Tea (Tips)
               </label>
               <input
-                type="number"
+                ref={teaInputRef}
+                type="text"
                 inputMode="decimal"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 value={currentRecord.teaEarnings}
+                onFocus={() => {
+                  setCalcTarget("teaEarnings")
+                  setCalcError(null)
+                }}
                 onChange={(e) => onUpdateRecord("teaEarnings", e.target.value)}
                 placeholder="0"
                 className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
               />
+              {calcTarget === "teaEarnings" && activePreview !== null && (
+                <div className="mt-1 text-[11px] text-slate-400 tabular-nums flex items-center justify-end">
+                  <span className="text-pink-200/80">=</span>&nbsp;
+                  <span className="text-pink-200 font-semibold">{activePreview}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Inline calculator bar (mobile-first) */}
+          <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold text-slate-300">Inline calc</div>
+              <div className="text-[10px] font-semibold text-slate-400">
+                Target:{" "}
+                <span className="text-slate-200">
+                  {calcTarget === "servicesRaw" ? "Services" : calcTarget === "tradeEarnings" ? "Trading" : "Tea"}
+                </span>
+              </div>
+            </div>
+
+            {calcError && <div className="text-[11px] text-red-300">{calcError}</div>}
+
+            <div className="grid grid-cols-6 gap-1.5">
+              {[
+                { k: "+", v: "+" },
+                { k: "−", v: "-" },
+                { k: "×", v: "*" },
+                { k: "÷", v: "/" },
+                { k: "(", v: "(" },
+                { k: ")", v: ")" },
+              ].map((b) => (
+                <button
+                  key={b.k}
+                  type="button"
+                  onClick={() => {
+                    appendToActive(b.v)
+                    focusTarget()
+                  }}
+                  className="h-10 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-semibold text-white transition-colors"
+                >
+                  {b.k}
+                </button>
+              ))}
             </div>
           </div>
         </div>
 
-        <div className="p-4 border-t border-white/10">
+        <div className="p-4 border-t border-white/10 shrink-0" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 16px)" }}>
           <button
             onClick={onConfirmShift}
             disabled={draftTotal <= 0}
