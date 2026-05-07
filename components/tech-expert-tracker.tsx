@@ -2025,29 +2025,30 @@ function ShiftDetailsModal({
                 <span className="text-[9px] text-slate-500 hidden sm:inline">base rate</span>
               </button>
             </div>
-            <input
-              ref={servicesInputRef}
-              autoFocus
-              type="text"
-              inputMode="decimal"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              value={currentRecord.servicesRaw}
-              onFocus={() => {
-                setCalcTarget("servicesRaw")
-                setCalcError(null)
-              }}
-              onChange={(e) => onUpdateRecord("servicesRaw", e.target.value)}
-              placeholder="0"
-              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
-            />
-            {calcTarget === "servicesRaw" && activePreview !== null && (
-              <div className="mt-1 text-[11px] text-slate-400 tabular-nums flex items-center justify-end">
-                <span className="text-blue-200/80">=</span>&nbsp;
-                <span className="text-blue-200 font-semibold">{activePreview}</span>
-              </div>
-            )}
+            <div className="relative">
+              <input
+                ref={servicesInputRef}
+                autoFocus
+                type="text"
+                inputMode="decimal"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                value={currentRecord.servicesRaw}
+                onFocus={() => {
+                  setCalcTarget("servicesRaw")
+                  setCalcError(null)
+                }}
+                onChange={(e) => onUpdateRecord("servicesRaw", e.target.value)}
+                placeholder="0"
+                className="w-full px-4 py-3 pr-20 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
+              />
+              {calcTarget === "servicesRaw" && activePreview !== null && (
+                <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold tabular-nums text-blue-200/70">
+                  = {activePreview}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -2056,56 +2057,58 @@ function ShiftDetailsModal({
                 <Coins className="w-3 h-3" style={{ color: TRADING_COLOR }} />
                 Trading
               </label>
-              <input
-                ref={tradingInputRef}
-                type="text"
-                inputMode="decimal"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                value={currentRecord.tradeEarnings}
-                onFocus={() => {
-                  setCalcTarget("tradeEarnings")
-                  setCalcError(null)
-                }}
-                onChange={(e) => onUpdateRecord("tradeEarnings", e.target.value)}
-                placeholder="0"
-                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
-              />
-              {calcTarget === "tradeEarnings" && activePreview !== null && (
-                <div className="mt-1 text-[11px] text-slate-400 tabular-nums flex items-center justify-end">
-                  <span className="text-amber-200/80">=</span>&nbsp;
-                  <span className="text-amber-200 font-semibold">{activePreview}</span>
-                </div>
-              )}
+              <div className="relative">
+                <input
+                  ref={tradingInputRef}
+                  type="text"
+                  inputMode="decimal"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  value={currentRecord.tradeEarnings}
+                  onFocus={() => {
+                    setCalcTarget("tradeEarnings")
+                    setCalcError(null)
+                  }}
+                  onChange={(e) => onUpdateRecord("tradeEarnings", e.target.value)}
+                  placeholder="0"
+                  className="w-full px-3 py-3 pr-16 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
+                />
+                {calcTarget === "tradeEarnings" && activePreview !== null && (
+                  <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold tabular-nums text-amber-200/70">
+                    = {activePreview}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
                 <Coffee className="w-3 h-3" style={{ color: TEA_COLOR }} />
                 Tea (Tips)
               </label>
-              <input
-                ref={teaInputRef}
-                type="text"
-                inputMode="decimal"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                value={currentRecord.teaEarnings}
-                onFocus={() => {
-                  setCalcTarget("teaEarnings")
-                  setCalcError(null)
-                }}
-                onChange={(e) => onUpdateRecord("teaEarnings", e.target.value)}
-                placeholder="0"
-                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
-              />
-              {calcTarget === "teaEarnings" && activePreview !== null && (
-                <div className="mt-1 text-[11px] text-slate-400 tabular-nums flex items-center justify-end">
-                  <span className="text-pink-200/80">=</span>&nbsp;
-                  <span className="text-pink-200 font-semibold">{activePreview}</span>
-                </div>
-              )}
+              <div className="relative">
+                <input
+                  ref={teaInputRef}
+                  type="text"
+                  inputMode="decimal"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  value={currentRecord.teaEarnings}
+                  onFocus={() => {
+                    setCalcTarget("teaEarnings")
+                    setCalcError(null)
+                  }}
+                  onChange={(e) => onUpdateRecord("teaEarnings", e.target.value)}
+                  placeholder="0"
+                  className="w-full px-3 py-3 pr-16 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
+                />
+                {calcTarget === "teaEarnings" && activePreview !== null && (
+                  <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold tabular-nums text-pink-200/70">
+                    = {activePreview}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
