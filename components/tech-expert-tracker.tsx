@@ -444,7 +444,8 @@ export default function TechExpertTracker() {
   const goalPct = currentGoal > 0 ? Math.round((monthRaw.servicesRaw / currentGoal) * 100) : 0
 
   // End-of-month forecast = (cumulative raw services / day-of-month) * days-in-month
-  const { forecastRawServices, forecastPct } = useMemo(() => {
+  // Also compute required per-day raw services to reach 102% of the goal by month end.
+  const { forecastRawServices, forecastPct, needPerDayRaw102 } = useMemo(() => {
     const today = new Date()
     const [y, m] = selectedMonthKey.split("-").map(Number)
     const isCurrent = today.getFullYear() === y && today.getMonth() === m - 1
@@ -457,9 +458,21 @@ export default function TechExpertTracker() {
       : isPast
         ? monthRaw.servicesRaw
         : 0
+
+    // Needed/day to close at 102% (only meaningful for current month)
+    const needPerDayRaw102 = (() => {
+      if (!isCurrent) return null
+      if (currentGoal <= 0) return null
+      const remainingDays = Math.max(1, daysInMonth - dayOfMonth + 1) // include today
+      const target = currentGoal * 1.02
+      const remaining = Math.max(0, target - monthRaw.servicesRaw)
+      return remaining / remainingDays
+    })()
+
     return {
       forecastRawServices: projected,
       forecastPct: currentGoal > 0 ? (projected / currentGoal) * 100 : 0,
+      needPerDayRaw102,
     }
   }, [monthRaw.servicesRaw, currentGoal, selectedMonthKey])
 
@@ -1170,7 +1183,7 @@ export default function TechExpertTracker() {
                 <span className="font-medium">{goalPct}% of services goal</span>
               </div>
               {forecastPct > 0 && (
-                <div className="flex items-center gap-1 text-[11px] text-slate-300/90">
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-300/90">
                   <span className="text-slate-500">Forecast</span>
                   <span
                     className={`font-bold tabular-nums ${
@@ -1185,6 +1198,14 @@ export default function TechExpertTracker() {
                   >
                     {Math.round(forecastPct)}%
                   </span>
+
+                  {needPerDayRaw102 !== null && (
+                    <>
+                      <span className="text-slate-600">·</span>
+                      <span className="text-slate-500">Need/day (102%)</span>
+                      <span className="font-bold tabular-nums text-blue-200">{fmtUah(needPerDayRaw102)}</span>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -2678,12 +2699,12 @@ function ShiftDetailsModal({
       role="dialog"
       aria-modal="true"
       aria-label="Shift details"
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm overflow-hidden overscroll-none"
+      className="fixed inset-0 z-50 flex justify-end sm:items-center sm:justify-center bg-black/70 backdrop-blur-sm overflow-hidden overscroll-none min-h-[100dvh]"
       onClick={onClose}
       onTouchMove={(e) => e.preventDefault()}
     >
       <div
-        className="w-full sm:max-w-md h-[88dvh] sm:max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl overflow-hidden"
+        className="w-full sm:max-w-md max-h-[calc(100dvh-16px)] sm:max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl overflow-hidden mt-auto"
         onClick={(e) => e.stopPropagation()}
         ref={panelRef}
       >
@@ -2725,7 +2746,7 @@ function ShiftDetailsModal({
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-hidden p-4 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-[calc(env(safe-area-inset-bottom)+16px)] flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-slate-400 tabular-nums">Today: {draftTotal.toFixed(2)} UAH</span>
           </div>
