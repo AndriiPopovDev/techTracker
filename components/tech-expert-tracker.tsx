@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react"
 import { flushSync } from "react-dom"
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts"
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from "recharts"
 import { Calendar, Wallet, Briefcase, Percent, TrendingUp, TrendingDown, Coins, Coffee, CircleCheck as CheckCircle2, History as HistoryIcon, Sparkles, X, ChevronLeft, ChevronRight, ChevronDown, Pencil, Trash2, Download, Upload, Target, Settings as SettingsIcon, Lock, Minus, LayoutGrid, Rows3 } from "lucide-react"
 import { toast } from "sonner"
 import { DayPicker } from "react-day-picker"
@@ -13,6 +13,8 @@ const TRADING_COLOR = "#f59e0b" // amber
 const TEA_COLOR = "#ec4899" // pink
 
 const MULTIPLIERS = [-0.2, -0.1, 0, 0.1, 0.2]
+const TARGET_SHIFTS_PER_MONTH = 22
+const ELECTRIC_CYAN = "#00f2ff"
 
 type DraftRecord = {
   servicesRaw: number | string
@@ -135,6 +137,14 @@ const entryRawBase = (e: HistoryEntry) =>
 const entryTrading = (e: HistoryEntry) =>
   typeof e.tradeEarnings === "number" ? e.tradeEarnings : Number(e.trading) || 0
 const entryTea = (e: HistoryEntry) => Number(e.teaEarnings) || 0
+
+const entryTotalWithMultiplier = (e: HistoryEntry, globalMultiplier: number) => {
+  const s = entryRawServices(e) * 0.035 * (1 + globalMultiplier)
+  const b = entryRawBase(e) * (1 + globalMultiplier)
+  const t = entryTrading(e)
+  const tea = entryTea(e)
+  return s + b + t + tea
+}
 
 function evalMiniExpr(expr: string): { ok: true; value: number } | { ok: false; error: string } {
   // Safe mini evaluator for + - * / and parentheses (no eval()).
@@ -477,6 +487,33 @@ export default function TechExpertTracker() {
   }, [monthRaw.servicesRaw, currentGoal, selectedMonthKey])
 
   const avgPerShift = monthEntries.length > 0 ? monthTotals.total / monthEntries.length : 0
+  const avgForecastTotal = avgPerShift * TARGET_SHIFTS_PER_MONTH
+
+  const last6Months = useMemo(() => {
+    // Build a per-month total map for all history entries.
+    const byMonth: Record<string, number> = {}
+    for (const e of history) {
+      const k = monthKeyOf(e.date)
+      byMonth[k] = (byMonth[k] ?? 0) + entryTotalWithMultiplier(e, globalMultiplier)
+    }
+
+    const [y, m] = selectedMonthKey.split("-").map(Number)
+    const keys: string[] = []
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(y, m - 1 - i, 1)
+      keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`)
+    }
+
+    return keys.map((k) => {
+      const [yy, mm] = k.split("-").map(Number)
+      return {
+        key: k,
+        month: MONTH_NAMES[mm - 1].slice(0, 3),
+        year: yy,
+        value: Number(((byMonth[k] ?? 0) || 0).toFixed(2)),
+      }
+    })
+  }, [history, globalMultiplier, selectedMonthKey])
 
   const updateRecord = (field: keyof DraftRecord, value: any) => {
     const next = {
@@ -1106,6 +1143,25 @@ export default function TechExpertTracker() {
                   ₴
                 </div>
               </div>
+
+              {/* Avg + Forecast cardlet (live projection) */}
+              <div
+                className={`mt-2 w-full max-w-[240px] rounded-2xl border border-cyan-300/20 bg-cyan-400/5 px-3 py-2 ${
+                  layoutMode === "detailed" ? "mx-auto" : ""
+                }`}
+                style={{ boxShadow: "0 0 0 1px rgba(0,242,255,0.08) inset, 0 0 18px rgba(0,242,255,0.10)" }}
+              >
+                <div className="text-[10px] uppercase tracking-wider text-slate-400">Forecast for {selectedMonthLabel}</div>
+                <div
+                  className="mt-0.5 text-sm font-bold tabular-nums text-cyan-200 animate-pulse"
+                  style={{ textShadow: "0 0 10px rgba(0,242,255,0.55), 0 0 22px rgba(0,242,255,0.25)" }}
+                >
+                  {fmtUah(avgForecastTotal)} ₴
+                </div>
+                <div className="mt-0.5 text-[11px] text-slate-400">
+                  Avg per shift: <span className="font-semibold tabular-nums text-slate-200">{fmtUah(avgPerShift)}</span> ₴
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1173,6 +1229,69 @@ export default function TechExpertTracker() {
                 </span>
               )}
             </span>
+          </div>
+
+          {/* Last 6 months — minimalist neon bar chart */}
+          <div className="mt-3 rounded-2xl bg-white/[0.03] border border-white/10 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[11px] font-semibold text-slate-300">Last 6 months</div>
+              <div className="text-[10px] text-slate-500">hover/tap bar for amount</div>
+            </div>
+            <div className="h-[96px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={last6Months} margin={{ top: 6, right: 6, bottom: 0, left: 6 }}>
+                  <defs>
+                    <linearGradient id="cyanFade" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={ELECTRIC_CYAN} stopOpacity={0.95} />
+                      <stop offset="55%" stopColor={ELECTRIC_CYAN} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={ELECTRIC_CYAN} stopOpacity={0} />
+                    </linearGradient>
+                    <filter id="barGlow" x="-100%" y="-100%" width="300%" height="300%">
+                      <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur" />
+                      <feColorMatrix
+                        in="blur"
+                        type="matrix"
+                        values="
+                          1 0 0 0 0
+                          0 1 0 0 0
+                          0 0 1 0 0
+                          0 0 0 0.9 0"
+                        result="glow"
+                      />
+                      <feMerge>
+                        <feMergeNode in="glow" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                  </defs>
+
+                  <XAxis
+                    dataKey="month"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "rgba(148,163,184,0.8)", fontSize: 10 }}
+                  />
+                  <YAxis hide />
+                  <Tooltip
+                    cursor={{ fill: "rgba(255,255,255,0.03)" }}
+                    formatter={(value: number) => [`${value.toFixed(2)} ₴`, "Total"]}
+                    labelFormatter={(_, payload) => {
+                      const p = payload?.[0]?.payload as any
+                      return p ? `${p.month} ${String(p.year).slice(-2)}` : ""
+                    }}
+                    contentStyle={{
+                      borderRadius: "12px",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      background: "rgba(15,23,42,0.95)",
+                      color: "#f1f5f9",
+                      backdropFilter: "blur(8px)",
+                      fontSize: 12,
+                    }}
+                  />
+                  <Bar dataKey="value" fill="url(#cyanFade)" radius={[8, 8, 2, 2]} barSize={10} filter="url(#barGlow)" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
 
           {/* MONTHLY SERVICES GOAL — thin progress bar with forecast tick */}
