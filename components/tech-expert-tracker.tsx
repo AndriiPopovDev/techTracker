@@ -996,7 +996,7 @@ export default function TechExpertTracker() {
           </div>
 
           {/* Side-by-side: donut anchor on left, vertical Legend in the middle, Total Balance on the right */}
-          <div className="relative flex items-center gap-2 sm:gap-2.5">
+          <div className="relative flex items-center gap-3 sm:gap-4">
             {/* Donut: visual anchor on the left. No external labels — clean ring with empty center.
                 `overflow-visible` on the SVG + small inner margin lets the bonusGlow filter
                 bleed past the chart bounds without being clipped at the bottom edge. */}
@@ -1085,24 +1085,27 @@ export default function TechExpertTracker() {
                 Each row: dot + colored icon + "Name:" + final UAH + subtle delta.
                 Name and value sit close together (gap-1) for a tight, readable list. */}
             {layoutMode === "compact" && (
-              <ul className="flex-1 min-w-0 self-center space-y-1 py-1">
+              <ul className="flex-1 min-w-0 self-center space-y-0.5 py-0.5">
                 {legendItems.length === 0 ? (
                   <li className="text-[11px] text-slate-500">No data yet</li>
                 ) : (
                   legendItems.map((item) => (
-                    <li key={item.name} className="flex items-center gap-1.5 min-w-0">
+                    <li key={item.name} className="flex items-center gap-2 min-w-0 leading-none">
                       <span
                         className="w-1.5 h-1.5 rounded-full shrink-0"
                         style={{ background: item.color, boxShadow: `0 0 6px ${item.color}` }}
                       />
-                      <span className="shrink-0" style={{ color: item.color }}>
-                        {item.icon}
+
+                      <span className="inline-flex items-center gap-1 shrink-0">
+                        <span className="shrink-0" style={{ color: item.color }}>
+                          {item.icon}
+                        </span>
+                        <span className="text-slate-500 text-[11px] sm:text-xs font-semibold">:</span>
                       </span>
-                      <span className="text-[11px] sm:text-xs text-slate-300 truncate min-w-0">
-                        {item.name}
-                        <span className="text-slate-500">:</span>
-                      </span>
-                      <span className="text-[11px] sm:text-xs font-semibold text-white tabular-nums shrink-0">
+
+                      <span className="sr-only">{item.name}</span>
+
+                      <span className="text-[11px] sm:text-xs font-semibold text-white tabular-nums">
                         {fmtUah(item.value)}
                       </span>
                       {item.delta !== undefined && Math.abs(item.delta) >= 0.5 && (
@@ -1125,7 +1128,7 @@ export default function TechExpertTracker() {
                 · Detailed: legend is hidden, so this block grows (`flex-1`) and centers itself
                   next to the donut, producing the balanced 2-column look. */}
             <div
-              className={`self-center flex flex-col items-end ${
+              className={`self-center shrink-0 flex flex-col items-end ${
                 layoutMode === "detailed"
                   ? "flex-1 min-w-0 text-center"
                   : "shrink-0"
@@ -1146,19 +1149,19 @@ export default function TechExpertTracker() {
 
               {/* Avg + Forecast cardlet (live projection) */}
               <div
-                className={`mt-2 w-full max-w-[240px] rounded-2xl border border-cyan-300/20 bg-cyan-400/5 px-3 py-2 ${
+                className={`mt-2 w-full max-w-[180px] rounded-2xl border border-cyan-300/20 bg-cyan-400/5 px-2.5 py-1.5 ${
                   layoutMode === "detailed" ? "mx-auto" : ""
                 }`}
                 style={{ boxShadow: "0 0 0 1px rgba(0,242,255,0.08) inset, 0 0 18px rgba(0,242,255,0.10)" }}
               >
-                <div className="text-[10px] uppercase tracking-wider text-slate-400">Forecast for {selectedMonthLabel}</div>
+                <div className="text-[9px] uppercase tracking-wider text-slate-400">Forecast for {selectedMonthLabel}</div>
                 <div
-                  className="mt-0.5 text-sm font-bold tabular-nums text-cyan-200 animate-pulse"
+                  className="mt-0.5 text-[13px] font-bold tabular-nums text-cyan-200 animate-pulse"
                   style={{ textShadow: "0 0 10px rgba(0,242,255,0.55), 0 0 22px rgba(0,242,255,0.25)" }}
                 >
                   {fmtUah(avgForecastTotal)} ₴
                 </div>
-                <div className="mt-0.5 text-[11px] text-slate-400">
+                <div className="mt-0.5 text-[10px] text-slate-400">
                   Avg per shift: <span className="font-semibold tabular-nums text-slate-200">{fmtUah(avgPerShift)}</span> ₴
                 </div>
               </div>
