@@ -3,7 +3,7 @@
 
 const CACHE = "earnings-tracker-v1"
 
-const CORE_ASSETS = ["/", "/manifest.webmanifest", "/icon.svg"]
+const CORE_ASSETS = ["/", "/manifest.json", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

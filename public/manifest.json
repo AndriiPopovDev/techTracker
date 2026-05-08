@@ -1,0 +1,19 @@
+{
+  "name": "Tech Earnings",
+  "short_name": "TechTrack",
+  "description": "Daily earnings tracker with services, base rate, and trading categories",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#00f2ff",
+  "theme_color": "#00f2ff",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+
