@@ -1,8 +1,11 @@
 "use client"
 
 import { useState, useEffect, useMemo, useRef } from "react"
+import { flushSync } from "react-dom"
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts"
 import { Calendar, Wallet, Briefcase, Percent, TrendingUp, TrendingDown, Coins, Coffee, CircleCheck as CheckCircle2, History as HistoryIcon, Sparkles, X, ChevronLeft, ChevronRight, Pencil, Trash2, Download, Upload, Target, Settings as SettingsIcon, Lock, Minus, LayoutGrid, Rows3 } from "lucide-react"
+import { toast } from "sonner"
+import { DayPicker } from "react-day-picker"
 
 const SERVICES_COLOR = "#3b82f6" // blue
 const BASE_COLOR = "#22c55e" // green
@@ -49,7 +52,44 @@ const MULTIPLIER_KEY = "techExpertMultiplier"
 const GOALS_KEY = "techExpertGoals" // monthly RAW services goal (per month key)
 const AUTO_MULT_KEY = "techExpertAutoMultiplier"
 const LAYOUT_MODE_KEY = "techExpertLayoutMode" // "compact" (legend visible, cards hidden) | "detailed" (legend hidden, cards visible)
+const AFTER_SAVE_KEY = "techExpertAfterSaveBehavior" // "close" | "staySameDayClear" | "stayNextDay"
+const PRESETS_KEY = "techExpertPresets"
+const BACKUPS_KEY = "techExpertBackups"
+const LAST_BACKUP_DAY_KEY = "techExpertLastBackupDay"
 type LayoutMode = "compact" | "detailed"
+type AfterSaveBehavior = "close" | "staySameDayClear" | "stayNextDay"
+
+type PresetTarget = "servicesRaw" | "tradeEarnings" | "teaEarnings"
+type PresetMode = "replace" | "append"
+type Preset = {
+  id: string
+  name: string
+  target: PresetTarget
+  mode: PresetMode
+  value: string
+}
+
+type BackupSnapshot = {
+  id: string
+  createdAt: number
+  data: {
+    version: 1
+    multiplier: number
+    autoMultiplier: boolean
+    goals: Record<string, number>
+    drafts: Record<string, DraftRecord>
+    history: HistoryEntry[]
+    layoutMode: LayoutMode
+    afterSaveBehavior: AfterSaveBehavior
+    presets: Preset[]
+  }
+}
+
+const DEFAULT_PRESETS: Preset[] = [
+  { id: "base-day", name: "Base day", target: "servicesRaw", mode: "replace", value: "15000" },
+  { id: "busy-day", name: "Busy day", target: "servicesRaw", mode: "replace", value: "25000" },
+  { id: "typical-tips", name: "Typical tips", target: "teaEarnings", mode: "replace", value: "200" },
+]
 
 const DEFAULT_GOAL = 50000
 
@@ -96,6 +136,100 @@ const entryTrading = (e: HistoryEntry) =>
   typeof e.tradeEarnings === "number" ? e.tradeEarnings : Number(e.trading) || 0
 const entryTea = (e: HistoryEntry) => Number(e.teaEarnings) || 0
 
+function evalMiniExpr(expr: string): { ok: true; value: number } | { ok: false; error: string } {
+  // Safe mini evaluator for + - * / and parentheses (no eval()).
+  const cleaned = expr.replace(/\s+/g, "")
+  if (!cleaned) return { ok: false, error: "Empty" }
+  if (cleaned.length > 64) return { ok: false, error: "Too long" }
+  if (/[^0-9+\-*/().]/.test(cleaned)) return { ok: false, error: "Invalid chars" }
+
+  type Tok = { t: "num"; v: number } | { t: "op"; v: string } | { t: "lp" } | { t: "rp" }
+  const tokens: Tok[] = []
+
+  let i = 0
+  while (i < cleaned.length) {
+    const ch = cleaned[i]
+    if (ch === "(") {
+      tokens.push({ t: "lp" })
+      i++
+      continue
+    }
+    if (ch === ")") {
+      tokens.push({ t: "rp" })
+      i++
+      continue
+    }
+    if ("+-*/".includes(ch)) {
+      const prev = tokens[tokens.length - 1]
+      const isUnary = ch === "-" && (!prev || prev.t === "op" || prev.t === "lp")
+      if (isUnary) tokens.push({ t: "num", v: 0 })
+      tokens.push({ t: "op", v: ch })
+      i++
+      continue
+    }
+    if (/[0-9.]/.test(ch)) {
+      let j = i
+      while (j < cleaned.length && /[0-9.]/.test(cleaned[j])) j++
+      const raw = cleaned.slice(i, j)
+      if ((raw.match(/\./g) || []).length > 1) return { ok: false, error: "Bad number" }
+      const n = Number(raw)
+      if (!Number.isFinite(n)) return { ok: false, error: "Bad number" }
+      tokens.push({ t: "num", v: n })
+      i = j
+      continue
+    }
+    return { ok: false, error: "Parse error" }
+  }
+
+  const prec: Record<string, number> = { "+": 1, "-": 1, "*": 2, "/": 2 }
+  const output: Tok[] = []
+  const ops: Tok[] = []
+
+  for (const tok of tokens) {
+    if (tok.t === "num") output.push(tok)
+    else if (tok.t === "op") {
+      while (ops.length) {
+        const top = ops[ops.length - 1]
+        if (top.t === "op" && prec[top.v] >= prec[tok.v]) output.push(ops.pop()!)
+        else break
+      }
+      ops.push(tok)
+    } else if (tok.t === "lp") ops.push(tok)
+    else if (tok.t === "rp") {
+      while (ops.length && ops[ops.length - 1].t !== "lp") output.push(ops.pop()!)
+      if (!ops.length) return { ok: false, error: "Mismatched ()" }
+      ops.pop()
+    }
+  }
+  while (ops.length) {
+    const top = ops.pop()!
+    if (top.t === "lp") return { ok: false, error: "Mismatched ()" }
+    output.push(top)
+  }
+
+  const stack: number[] = []
+  for (const tok of output) {
+    if (tok.t === "num") stack.push(tok.v)
+    else if (tok.t === "op") {
+      const b = stack.pop()
+      const a = stack.pop()
+      if (a === undefined || b === undefined) return { ok: false, error: "Bad expr" }
+      let r = 0
+      if (tok.v === "+") r = a + b
+      if (tok.v === "-") r = a - b
+      if (tok.v === "*") r = a * b
+      if (tok.v === "/") {
+        if (b === 0) return { ok: false, error: "Divide by 0" }
+        r = a / b
+      }
+      if (!Number.isFinite(r)) return { ok: false, error: "Bad result" }
+      stack.push(r)
+    }
+  }
+  if (stack.length !== 1) return { ok: false, error: "Bad expr" }
+  return { ok: true, value: Number(stack[0].toFixed(6)) }
+}
+
 export default function TechExpertTracker() {
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split("T")[0])
   const [drafts, setDrafts] = useState<Record<string, DraftRecord>>({})
@@ -108,9 +242,15 @@ export default function TechExpertTracker() {
   const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7))
   const [autoMultiplier, setAutoMultiplier] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [shiftModalOpen, setShiftModalOpen] = useState(false)
+  const [calendarOpen, setCalendarOpen] = useState(false)
+  const [afterSaveBehavior, setAfterSaveBehavior] = useState<AfterSaveBehavior>("staySameDayClear")
+  const [presets, setPresets] = useState<Preset[]>(DEFAULT_PRESETS)
+  const [backups, setBackups] = useState<BackupSnapshot[]>([])
   // Compact: legend next to chart, summary cards hidden. Detailed: cards visible, legend hidden.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("compact")
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const shiftModalServicesInputRef = useRef<HTMLInputElement>(null)
 
   // Hydrate from localStorage
   useEffect(() => {
@@ -130,19 +270,95 @@ export default function TechExpertTracker() {
       if (savedAuto !== null) setAutoMultiplier(savedAuto === "true")
       const savedLayout = localStorage.getItem(LAYOUT_MODE_KEY)
       if (savedLayout === "compact" || savedLayout === "detailed") setLayoutMode(savedLayout)
+      const savedAfterSave = localStorage.getItem(AFTER_SAVE_KEY)
+      if (savedAfterSave === "close" || savedAfterSave === "staySameDayClear" || savedAfterSave === "stayNextDay") {
+        setAfterSaveBehavior(savedAfterSave)
+      }
+      const savedPresets = localStorage.getItem(PRESETS_KEY)
+      if (savedPresets) {
+        const parsed = JSON.parse(savedPresets)
+        if (Array.isArray(parsed) && parsed.length > 0) setPresets(parsed)
+      } else {
+        localStorage.setItem(PRESETS_KEY, JSON.stringify(DEFAULT_PRESETS))
+      }
+      const savedBackups = localStorage.getItem(BACKUPS_KEY)
+      if (savedBackups) {
+        const parsed = JSON.parse(savedBackups)
+        if (Array.isArray(parsed)) setBackups(parsed)
+      }
     } catch {
       /* noop */
     }
     setIsLoaded(true)
   }, [])
 
+  const updateAfterSaveBehavior = (next: AfterSaveBehavior) => {
+    setAfterSaveBehavior(next)
+    localStorage.setItem(AFTER_SAVE_KEY, next)
+  }
+
+  const updatePresets = (next: Preset[]) => {
+    setPresets(next)
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(next))
+  }
+
+  const applySnapshot = (snap: BackupSnapshot["data"]) => {
+    setHistory(snap.history)
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(snap.history))
+    setDrafts(snap.drafts)
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(snap.drafts))
+    setGoals(snap.goals)
+    localStorage.setItem(GOALS_KEY, JSON.stringify(snap.goals))
+    setGlobalMultiplier(snap.multiplier)
+    localStorage.setItem(MULTIPLIER_KEY, String(snap.multiplier))
+    setAutoMultiplier(!!snap.autoMultiplier)
+    localStorage.setItem(AUTO_MULT_KEY, String(!!snap.autoMultiplier))
+    setLayoutMode(snap.layoutMode)
+    localStorage.setItem(LAYOUT_MODE_KEY, snap.layoutMode)
+    setAfterSaveBehavior(snap.afterSaveBehavior)
+    localStorage.setItem(AFTER_SAVE_KEY, snap.afterSaveBehavior)
+    setPresets(snap.presets)
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(snap.presets))
+  }
+
+  const pushBackup = (reason: "confirmShift" | "daily") => {
+    const todayKey = new Date().toISOString().slice(0, 10)
+    if (reason === "daily") {
+      const last = localStorage.getItem(LAST_BACKUP_DAY_KEY)
+      if (last === todayKey) return
+      localStorage.setItem(LAST_BACKUP_DAY_KEY, todayKey)
+    }
+
+    const snap: BackupSnapshot = {
+      id: `b-${Date.now()}`,
+      createdAt: Date.now(),
+      data: {
+        version: 1,
+        multiplier: globalMultiplier,
+        autoMultiplier,
+        goals,
+        drafts,
+        history,
+        layoutMode,
+        afterSaveBehavior,
+        presets,
+      },
+    }
+    const next = [snap, ...backups].slice(0, 10)
+    setBackups(next)
+    localStorage.setItem(BACKUPS_KEY, JSON.stringify(next))
+  }
+
   const currentRecord: DraftRecord = drafts[selectedDate] || DEFAULT_DRAFT
 
   // Draft preview (today's pending shift) — also affected by global multiplier
-  const draftServicesRaw = Number(currentRecord.servicesRaw) || 0
+  const draftServicesEval = evalMiniExpr(String(currentRecord.servicesRaw ?? ""))
+  const draftServicesRaw = draftServicesEval.ok ? draftServicesEval.value : 0
   const draftBaseRaw = currentRecord.hasBaseRate ? 400 : 0
-  const draftTrading = Number(currentRecord.tradeEarnings) || 0
-  const draftTea = Number(currentRecord.teaEarnings) || 0
+  const draftTradingEval = evalMiniExpr(String(currentRecord.tradeEarnings ?? ""))
+  const draftTrading = draftTradingEval.ok ? draftTradingEval.value : 0
+  const draftTeaEval = evalMiniExpr(String(currentRecord.teaEarnings ?? ""))
+  const draftTea = draftTeaEval.ok ? draftTeaEval.value : 0
   const draftFinalServices = draftServicesRaw * 0.035 * (1 + globalMultiplier)
   const draftFinalBase = draftBaseRaw * (1 + globalMultiplier)
   const draftTotal = draftFinalServices + draftFinalBase + draftTrading + draftTea
@@ -153,6 +369,19 @@ export default function TechExpertTracker() {
     () => history.filter((e) => monthKeyOf(e.date) === selectedMonthKey),
     [history, selectedMonthKey],
   )
+
+  const dayTotals = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const e of history) {
+      const s = entryRawServices(e) * 0.035 * (1 + globalMultiplier)
+      const b = entryRawBase(e) * (1 + globalMultiplier)
+      const t = entryTrading(e)
+      const tea = entryTea(e)
+      const total = s + b + t + tea
+      map[e.date] = (map[e.date] || 0) + total
+    }
+    return map
+  }, [history, globalMultiplier])
 
   // Sum raw values from history; multiplier is applied dynamically here.
   const monthRaw = useMemo(() => {
@@ -278,6 +507,9 @@ export default function TechExpertTracker() {
 
   const confirmShift = () => {
     if (draftTotal <= 0) return
+    pushBackup("daily")
+    const prevHistory = history
+    const prevDrafts = drafts
     const entry: HistoryEntry = {
       id: `${selectedDate}-${Date.now()}`,
       date: selectedDate,
@@ -299,7 +531,56 @@ export default function TechExpertTracker() {
 
     setJustSaved(true)
     setTimeout(() => setJustSaved(false), 1800)
+
+    pushBackup("confirmShift")
+
+    toast("Shift saved", {
+      description: "Tap Undo to restore the previous state.",
+      duration: 6000,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          setHistory(prevHistory)
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(prevHistory))
+          setDrafts(prevDrafts)
+          localStorage.setItem(DRAFT_KEY, JSON.stringify(prevDrafts))
+          setJustSaved(false)
+        },
+      },
+    })
   }
+
+  const openShiftModal = () => {
+    // Always default to today when starting a new shift entry from the FAB.
+    const today = new Date().toISOString().split("T")[0]
+    // iOS Safari often blocks programmatic keyboard unless focus happens
+    // synchronously within the user gesture. Flush render, then focus.
+    flushSync(() => {
+      setSelectedDate(today)
+      setShiftModalOpen(true)
+    })
+    shiftModalServicesInputRef.current?.focus()
+  }
+
+  // When the modal opens, focus the first input so iOS shows the keyboard.
+  useEffect(() => {
+    if (!shiftModalOpen) return
+    const id = globalThis.setTimeout(() => {
+      shiftModalServicesInputRef.current?.focus()
+    }, 50)
+    return () => globalThis.clearTimeout(id)
+  }, [shiftModalOpen])
+
+  // Prevent background (body) scroll while modal is open (especially iOS).
+  useEffect(() => {
+    if (!shiftModalOpen) return
+    const body = document.body
+    const prevOverflow = body.style.overflow
+    body.style.overflow = "hidden"
+    return () => {
+      body.style.overflow = prevOverflow
+    }
+  }, [shiftModalOpen])
 
   const deleteEntry = (id: string) => {
     if (typeof window !== "undefined" && !window.confirm("Delete this shift? This cannot be undone.")) return
@@ -607,6 +888,14 @@ export default function TechExpertTracker() {
             </label>
             <button
               type="button"
+              aria-label="Open calendar"
+              onClick={() => setCalendarOpen(true)}
+              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 backdrop-blur-md border border-white/10 flex items-center justify-center transition-colors"
+            >
+              <Calendar className="w-4 h-4 text-blue-300" />
+            </button>
+            <button
+              type="button"
               aria-label="View history"
               onClick={() => {
                 setHistoryMonth(selectedMonthKey)
@@ -644,7 +933,7 @@ export default function TechExpertTracker() {
           </div>
 
           {/* Side-by-side: donut anchor on left, vertical Legend in the middle, Total Balance on the right */}
-          <div className="relative flex items-center gap-2.5 sm:gap-3">
+          <div className="relative flex items-center gap-2 sm:gap-2.5">
             {/* Donut: visual anchor on the left. No external labels — clean ring with empty center.
                 `overflow-visible` on the SVG + small inner margin lets the bonusGlow filter
                 bleed past the chart bounds without being clipped at the bottom edge. */}
@@ -733,7 +1022,7 @@ export default function TechExpertTracker() {
                 Each row: dot + colored icon + "Name:" + final UAH + subtle delta.
                 Name and value sit close together (gap-1) for a tight, readable list. */}
             {layoutMode === "compact" && (
-              <ul className="flex-1 min-w-0 self-center space-y-1.5 py-1">
+              <ul className="flex-1 min-w-0 self-center space-y-1 py-1">
                 {legendItems.length === 0 ? (
                   <li className="text-[11px] text-slate-500">No data yet</li>
                 ) : (
@@ -773,30 +1062,33 @@ export default function TechExpertTracker() {
                 · Detailed: legend is hidden, so this block grows (`flex-1`) and centers itself
                   next to the donut, producing the balanced 2-column look. */}
             <div
-              className={`self-center ${
+              className={`self-center flex flex-col items-end ${
                 layoutMode === "detailed"
                   ? "flex-1 min-w-0 text-center"
-                  : "shrink-0 text-right pl-1 mr-10"
+                  : "shrink-0"
               }`}
             >
-              <div
-                className={`font-bold text-white tabular-nums tracking-tight leading-none ${
-                  layoutMode === "detailed" ? "text-3xl sm:text-4xl" : "text-2xl sm:text-3xl"
-                }`}
-              >
-                {fmtUah(monthTotals.total)}
-              </div>
-              <div className="mt-1 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-blue-200/70">
-                UAH
+              <div className={`flex items-baseline gap-1.5 ${layoutMode === "detailed" ? "justify-center w-full" : ""}`}>
+                <div
+                  className={`font-bold text-white tabular-nums tracking-tight leading-none ${
+                    layoutMode === "detailed" ? "text-3xl sm:text-4xl" : "text-2xl sm:text-3xl"
+                  }`}
+                >
+                  {fmtUah(monthTotals.total)}
+                </div>
+                <div className="text-xs sm:text-sm font-semibold text-cyan-300/60">
+                  ₴
+                </div>
               </div>
             </div>
           </div>
 
           {/* Meta row — trend, shifts/avg, multiplier — moved below the chart row for breathing room.
-              In detailed mode it centers under the (now-centered) Total Balance value. */}
+              In detailed mode it centers under the (now-centered) Total Balance value.
+              In compact mode it stays left-aligned and tight. */}
           <div
             className={`relative mt-2 flex items-center gap-1.5 flex-wrap text-[11px] ${
-              layoutMode === "detailed" ? "justify-center" : ""
+              layoutMode === "detailed" ? "justify-center" : "justify-end sm:justify-start"
             }`}
           >
             {trendDeltaPct === null ? (
@@ -1018,132 +1310,6 @@ export default function TechExpertTracker() {
           </section>
         )}
 
-        {/* Input Form — operates on the SELECTED DATE draft */}
-        <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4 mb-4 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Briefcase className="w-4 h-4 text-blue-300" />
-              Shift Details
-            </h2>
-            <span className="text-[11px] text-slate-400 tabular-nums">
-              Today: {draftTotal.toFixed(2)} UAH
-            </span>
-          </div>
-
-          {/* Services input — base-rate is now a compact "status LED" toggle on the label row,
-              replacing the previous bulky full-width card. The dot acts as the toggle button. */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <label className="text-xs font-medium text-slate-400">
-                Total services amount <span className="text-slate-500">(× 3.5%)</span>
-              </label>
-              <button
-                type="button"
-                onClick={() => updateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
-                aria-pressed={currentRecord.hasBaseRate}
-                title={
-                  currentRecord.hasBaseRate
-                    ? "Base rate ON — adds +400 UAH (multiplier applies). Click to disable."
-                    : "Base rate OFF — click to add +400 UAH base shift rate."
-                }
-                className={`group flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full border transition-all ${
-                  currentRecord.hasBaseRate
-                    ? "border-cyan-300/40 bg-cyan-400/10 shadow-[0_0_14px_-4px_rgba(34,211,238,0.7)]"
-                    : "border-white/10 bg-white/5 hover:border-white/20"
-                }`}
-              >
-                {/* Status LED — glowing electric cyan when ON, muted slate when OFF */}
-                <span className="relative flex items-center justify-center w-3 h-3">
-                  {currentRecord.hasBaseRate && (
-                    <span className="absolute inset-0 rounded-full bg-cyan-400/60 animate-ping" />
-                  )}
-                  <span
-                    className={`relative w-2 h-2 rounded-full transition-colors ${
-                      currentRecord.hasBaseRate ? "bg-cyan-300" : "bg-slate-600 group-hover:bg-slate-500"
-                    }`}
-                    style={
-                      currentRecord.hasBaseRate
-                        ? { boxShadow: "0 0 8px rgba(34,211,238,0.95), 0 0 14px rgba(6,182,212,0.7)" }
-                        : undefined
-                    }
-                  />
-                </span>
-                <span
-                  className={`text-[10px] font-semibold tabular-nums tracking-tight ${
-                    currentRecord.hasBaseRate ? "text-cyan-200" : "text-slate-400"
-                  }`}
-                >
-                  +400 UAH
-                </span>
-                <span className="text-[9px] text-slate-500 hidden sm:inline">base rate</span>
-              </button>
-            </div>
-            <input
-              type="number"
-              inputMode="decimal"
-              value={currentRecord.servicesRaw}
-              onChange={(e) => updateRecord("servicesRaw", e.target.value)}
-              placeholder="0"
-              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
-            />
-          </div>
-
-          {/* Trading + Tea inputs side-by-side on mobile too */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
-                <Coins className="w-3 h-3" style={{ color: TRADING_COLOR }} />
-                Trading
-              </label>
-              <input
-                type="number"
-                inputMode="decimal"
-                value={currentRecord.tradeEarnings}
-                onChange={(e) => updateRecord("tradeEarnings", e.target.value)}
-                placeholder="0"
-                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
-                <Coffee className="w-3 h-3" style={{ color: TEA_COLOR }} />
-                Tea (Tips)
-              </label>
-              <input
-                type="number"
-                inputMode="decimal"
-                value={currentRecord.teaEarnings}
-                onChange={(e) => updateRecord("teaEarnings", e.target.value)}
-                placeholder="0"
-                className="w-full px-3 py-3 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
-              />
-            </div>
-          </div>
-
-          {/* Confirm Shift */}
-          <button
-            onClick={confirmShift}
-            disabled={draftTotal <= 0}
-            className={`relative w-full py-4 rounded-2xl font-semibold text-base transition-all flex items-center justify-center gap-2 ${
-              draftTotal > 0
-                ? "bg-blue-500 hover:bg-blue-400 text-white shadow-[0_0_30px_-4px_rgba(59,130,246,0.7),0_8px_24px_-8px_rgba(59,130,246,0.6)] active:scale-[0.98]"
-                : "bg-slate-800 text-slate-600 cursor-not-allowed"
-            }`}
-          >
-            {justSaved ? (
-              <>
-                <CheckCircle2 className="w-5 h-5" />
-                Shift Saved
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="w-5 h-5" />
-                Confirm Shift
-              </>
-            )}
-          </button>
-        </section>
-
         {/* Recent History (this month) */}
         <section className="rounded-3xl bg-white/[0.04] backdrop-blur-xl border border-white/10 p-4">
           <div className="flex items-center justify-between mb-3">
@@ -1214,6 +1380,59 @@ export default function TechExpertTracker() {
         </section>
       </div>
 
+      {/* Floating Action Button — quick access to Shift Details */}
+      <button
+        type="button"
+        onClick={openShiftModal}
+        aria-label="Add shift"
+        className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-2xl bg-blue-500 text-white shadow-[0_0_28px_-6px_rgba(59,130,246,0.85),0_10px_26px_-10px_rgba(0,0,0,0.7)] border border-blue-300/30 hover:bg-blue-400 active:scale-[0.98] transition-all flex items-center justify-center"
+      >
+        <span className="sr-only">Add shift</span>
+        <Briefcase className="w-5 h-5" />
+      </button>
+
+      {shiftModalOpen && (
+        <ShiftDetailsModal
+          selectedDate={selectedDate}
+          draftTotal={draftTotal}
+          justSaved={justSaved}
+          currentRecord={currentRecord}
+          presets={presets}
+          onClose={() => setShiftModalOpen(false)}
+          onUpdateRecord={updateRecord}
+          onConfirmShift={() => {
+            confirmShift()
+            if (afterSaveBehavior === "close") {
+              setShiftModalOpen(false)
+              return
+            }
+            if (afterSaveBehavior === "stayNextDay") {
+              const today = new Date(selectedDate)
+              const next = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
+              setSelectedDate(next.toISOString().split("T")[0])
+            }
+            // Default (staySameDayClear): keep modal open; confirmShift already clears inputs.
+            // Refocus the first input for fast multi-entry.
+            globalThis.setTimeout(() => shiftModalServicesInputRef.current?.focus(), 50)
+          }}
+          servicesInputRef={shiftModalServicesInputRef}
+        />
+      )}
+
+      {calendarOpen && (
+        <CalendarModal
+          selectedDate={selectedDate}
+          dayTotals={dayTotals}
+          onClose={() => setCalendarOpen(false)}
+          onSelectDate={(d) => setSelectedDate(d)}
+          onOpenShift={(d) => {
+            setSelectedDate(d)
+            setCalendarOpen(false)
+            openShiftModal()
+          }}
+        />
+      )}
+
       {historyOpen && (
         <HistoryModal
           history={history}
@@ -1223,8 +1442,6 @@ export default function TechExpertTracker() {
           onClose={() => setHistoryOpen(false)}
           onDelete={deleteEntry}
           onEdit={editEntry}
-          onExport={exportData}
-          onImport={triggerImport}
         />
       )}
 
@@ -1238,6 +1455,20 @@ export default function TechExpertTracker() {
           forecastPct={forecastPct}
           layoutMode={layoutMode}
           onChangeLayoutMode={updateLayoutMode}
+          afterSaveBehavior={afterSaveBehavior}
+          onChangeAfterSaveBehavior={updateAfterSaveBehavior}
+          presets={presets}
+          onChangePresets={updatePresets}
+          backups={backups}
+          onRestoreBackup={(b) => {
+            applySnapshot(b.data)
+            toast("Backup restored", { description: new Date(b.createdAt).toLocaleString() })
+          }}
+          onDeleteAllBackups={() => {
+            setBackups([])
+            localStorage.setItem(BACKUPS_KEY, JSON.stringify([]))
+            toast("Backups deleted")
+          }}
           onClose={() => setSettingsOpen(false)}
           onExport={exportData}
           onImport={triggerImport}
@@ -1371,8 +1602,6 @@ function HistoryModal({
   onClose,
   onDelete,
   onEdit,
-  onExport,
-  onImport,
 }: {
   history: HistoryEntry[]
   monthKey: string
@@ -1381,11 +1610,17 @@ function HistoryModal({
   onClose: () => void
   onDelete: (id: string) => void
   onEdit: (entry: HistoryEntry) => void
-  onExport: () => void
-  onImport: () => void
 }) {
   const [year, month] = monthKey.split("-").map(Number)
   const label = `${MONTH_NAMES[month - 1]} ${year}`
+  const [rangeMode, setRangeMode] = useState<"month" | "lastMonth" | "all" | "custom">("month")
+  const [customStart, setCustomStart] = useState("")
+  const [customEnd, setCustomEnd] = useState("")
+  const [minTotal, setMinTotal] = useState("")
+  const [maxTotal, setMaxTotal] = useState("")
+  const [baseFilter, setBaseFilter] = useState<"any" | "with" | "without">("any")
+  const [sortMode, setSortMode] = useState<"dateDesc" | "dateAsc" | "totalDesc" | "totalAsc">("dateDesc")
+  const [query, setQuery] = useState("")
 
   const shiftMonth = (delta: number) => {
     const d = new Date(year, month - 1 + delta, 1)
@@ -1393,13 +1628,63 @@ function HistoryModal({
     onChangeMonth(next)
   }
 
-  const entries = useMemo(
-    () =>
-      history
-        .filter((e) => monthKeyOf(e.date) === monthKey)
-        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.savedAt - a.savedAt)),
-    [history, monthKey],
-  )
+  const entryTotal = (e: HistoryEntry) => {
+    const s = entryRawServices(e) * 0.035 * (1 + globalMultiplier)
+    const b = entryRawBase(e) * (1 + globalMultiplier)
+    const t = entryTrading(e)
+    const tea = entryTea(e)
+    return s + b + t + tea
+  }
+
+  const baseEntries = useMemo(() => {
+    if (rangeMode === "all") return history
+    if (rangeMode === "month") return history.filter((e) => monthKeyOf(e.date) === monthKey)
+    if (rangeMode === "lastMonth") {
+      const d = new Date(year, month - 2, 1)
+      const prevKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+      return history.filter((e) => monthKeyOf(e.date) === prevKey)
+    }
+    // custom
+    if (!customStart || !customEnd) return history
+    const start = new Date(customStart).getTime()
+    const end = new Date(customEnd).getTime()
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return history
+    const lo = Math.min(start, end)
+    const hi = Math.max(start, end)
+    return history.filter((e) => {
+      const t = new Date(e.date).getTime()
+      return t >= lo && t <= hi
+    })
+  }, [rangeMode, history, monthKey, year, month, customStart, customEnd])
+
+  const entries = useMemo(() => {
+    const min = Number(minTotal)
+    const max = Number(maxTotal)
+    const hasMin = minTotal.trim() !== "" && Number.isFinite(min)
+    const hasMax = maxTotal.trim() !== "" && Number.isFinite(max)
+    const q = query.trim().toLowerCase()
+
+    const filtered = baseEntries.filter((e) => {
+      if (baseFilter === "with" && entryRawBase(e) <= 0) return false
+      if (baseFilter === "without" && entryRawBase(e) > 0) return false
+      const total = entryTotal(e)
+      if (hasMin && total < min) return false
+      if (hasMax && total > max) return false
+      if (q) {
+        const dateLabel = new Date(e.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
+        if (!dateLabel.toLowerCase().includes(q) && !e.date.toLowerCase().includes(q)) return false
+      }
+      return true
+    })
+
+    const sorted = [...filtered].sort((a, b) => {
+      if (sortMode === "dateAsc") return a.date.localeCompare(b.date) || a.savedAt - b.savedAt
+      if (sortMode === "dateDesc") return b.date.localeCompare(a.date) || b.savedAt - a.savedAt
+      if (sortMode === "totalAsc") return entryTotal(a) - entryTotal(b)
+      return entryTotal(b) - entryTotal(a)
+    })
+    return sorted
+  }, [baseEntries, baseFilter, minTotal, maxTotal, query, sortMode, globalMultiplier])
 
   const totals = useMemo(() => {
     const raw = entries.reduce(
@@ -1453,28 +1738,10 @@ function HistoryModal({
             </div>
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-white truncate">Shift History</h3>
-              <p className="text-[11px] text-slate-400 truncate">Edit, delete, or export your data</p>
+              <p className="text-[11px] text-slate-400 truncate">Edit or delete shifts</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              aria-label="Import data"
-              onClick={onImport}
-              className="h-8 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-1.5 text-[11px] font-semibold text-slate-200 transition-colors"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              Import
-            </button>
-            <button
-              type="button"
-              aria-label="Export data"
-              onClick={onExport}
-              className="h-8 px-2.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-400/30 flex items-center gap-1.5 text-[11px] font-semibold text-blue-200 transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Export
-            </button>
             <button
               type="button"
               aria-label="Close history"
@@ -1569,6 +1836,86 @@ function HistoryModal({
               </div>
             </div>
           </div>
+
+          {/* Filters */}
+          <div className="rounded-2xl bg-white/[0.03] border border-white/10 p-3 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={rangeMode}
+                onChange={(e) => setRangeMode(e.target.value as any)}
+                className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none [color-scheme:dark]"
+              >
+                <option value="month">This month</option>
+                <option value="lastMonth">Last month</option>
+                <option value="all">All time</option>
+                <option value="custom">Custom</option>
+              </select>
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as any)}
+                className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none [color-scheme:dark]"
+              >
+                <option value="dateDesc">Date ↓</option>
+                <option value="dateAsc">Date ↑</option>
+                <option value="totalDesc">Total ↓</option>
+                <option value="totalAsc">Total ↑</option>
+              </select>
+            </div>
+
+            {rangeMode === "custom" && (
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="date"
+                  value={customStart}
+                  onChange={(e) => setCustomStart(e.target.value)}
+                  className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none [color-scheme:dark]"
+                />
+                <input
+                  type="date"
+                  value={customEnd}
+                  onChange={(e) => setCustomEnd(e.target.value)}
+                  className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none [color-scheme:dark]"
+                />
+              </div>
+            )}
+
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search date…"
+              className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none placeholder:text-slate-600"
+            />
+
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                value={minTotal}
+                onChange={(e) => setMinTotal(e.target.value)}
+                inputMode="decimal"
+                placeholder="Min total"
+                className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none placeholder:text-slate-600 tabular-nums"
+              />
+              <input
+                value={maxTotal}
+                onChange={(e) => setMaxTotal(e.target.value)}
+                inputMode="decimal"
+                placeholder="Max total"
+                className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none placeholder:text-slate-600 tabular-nums"
+              />
+              <select
+                value={baseFilter}
+                onChange={(e) => setBaseFilter(e.target.value as any)}
+                className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none [color-scheme:dark]"
+              >
+                <option value="any">Base: any</option>
+                <option value="with">Base: on</option>
+                <option value="without">Base: off</option>
+              </select>
+            </div>
+
+            <div className="text-[10px] text-slate-500">
+              Showing <span className="text-slate-300 font-semibold">{entries.length}</span> shifts
+            </div>
+          </div>
         </div>
 
         {/* Entries list */}
@@ -1645,6 +1992,131 @@ function HistoryModal({
   )
 }
 
+function CalendarModal({
+  selectedDate,
+  dayTotals,
+  onClose,
+  onSelectDate,
+  onOpenShift,
+}: {
+  selectedDate: string
+  dayTotals: Record<string, number>
+  onClose: () => void
+  onSelectDate: (dateStr: string) => void
+  onOpenShift: (dateStr: string) => void
+}) {
+  const selected = useMemo(() => new Date(selectedDate), [selectedDate])
+
+  const { low, mid, high } = useMemo(() => {
+    const entries = Object.entries(dayTotals).filter(([, v]) => v > 0)
+    if (entries.length === 0) return { low: [] as Date[], mid: [] as Date[], high: [] as Date[] }
+    const vals = entries.map(([, v]) => v).sort((a, b) => a - b)
+    const p33 = vals[Math.floor(vals.length * 0.33)] ?? vals[0]
+    const p66 = vals[Math.floor(vals.length * 0.66)] ?? vals[vals.length - 1]
+    const lowDates: Date[] = []
+    const midDates: Date[] = []
+    const highDates: Date[] = []
+    for (const [k, v] of entries) {
+      const d = new Date(k)
+      if (v <= p33) lowDates.push(d)
+      else if (v <= p66) midDates.push(d)
+      else highDates.push(d)
+    }
+    return { low: lowDates, mid: midDates, high: highDates }
+  }, [dayTotals])
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Calendar"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full sm:max-w-md max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shrink-0">
+              <Calendar className="w-4 h-4 text-blue-300" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-white truncate">Calendar</h3>
+              <p className="text-[11px] text-slate-400 truncate">Tap a day to select</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close calendar"
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+          >
+            <X className="w-4 h-4 text-slate-300" />
+          </button>
+        </div>
+
+        <div className="p-4 overflow-y-auto">
+          <div className="rounded-2xl bg-white/[0.03] border border-white/10 p-3">
+            <DayPicker
+              mode="single"
+              selected={selected}
+              onSelect={(d) => {
+                if (!d) return
+                const dateStr = d.toISOString().split("T")[0]
+                onSelectDate(dateStr)
+              }}
+              modifiers={{ low, mid, high }}
+              modifiersClassNames={{
+                low: "bg-blue-500/15 text-blue-100 rounded-xl",
+                mid: "bg-blue-500/30 text-blue-50 rounded-xl",
+                high: "bg-blue-500/55 text-white rounded-xl",
+              }}
+              className="text-slate-200"
+              weekStartsOn={1}
+            />
+            <div className="mt-3 flex items-center justify-between text-[10px] text-slate-500">
+              <span>Legend</span>
+              <span className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded bg-blue-500/15 border border-white/10" />
+                  low
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded bg-blue-500/30 border border-white/10" />
+                  mid
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 rounded bg-blue-500/55 border border-white/10" />
+                  high
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-white/10 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onOpenShift(selectedDate)}
+            className="flex-1 py-3 rounded-2xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/30 text-sm font-semibold text-blue-200 transition-colors"
+          >
+            Open shift
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-semibold text-slate-200 transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SettingsModal({
   monthLabel,
   servicesGoal,
@@ -1654,6 +2126,13 @@ function SettingsModal({
   forecastPct,
   layoutMode,
   onChangeLayoutMode,
+  afterSaveBehavior,
+  onChangeAfterSaveBehavior,
+  presets,
+  onChangePresets,
+  backups,
+  onRestoreBackup,
+  onDeleteAllBackups,
   onClose,
   onExport,
   onImport,
@@ -1666,6 +2145,13 @@ function SettingsModal({
   forecastPct: number
   layoutMode: LayoutMode
   onChangeLayoutMode: (next: LayoutMode) => void
+  afterSaveBehavior: AfterSaveBehavior
+  onChangeAfterSaveBehavior: (next: AfterSaveBehavior) => void
+  presets: Preset[]
+  onChangePresets: (next: Preset[]) => void
+  backups: BackupSnapshot[]
+  onRestoreBackup: (b: BackupSnapshot) => void
+  onDeleteAllBackups: () => void
   onClose: () => void
   onExport: () => void
   onImport: () => void
@@ -1685,6 +2171,25 @@ function SettingsModal({
   const projectedMultPct = Math.round(autoMultiplierFor(forecastPct) * 100)
   const projectedTone =
     projectedMultPct > 0 ? "text-emerald-300" : projectedMultPct < 0 ? "text-red-300" : "text-blue-200"
+
+  const upsertPreset = (id: string, patch: Partial<Preset>) => {
+    onChangePresets(presets.map((p) => (p.id === id ? { ...p, ...patch } : p)))
+  }
+
+  const addPreset = () => {
+    const next: Preset = {
+      id: `p-${Date.now()}`,
+      name: "New preset",
+      target: "servicesRaw",
+      mode: "replace",
+      value: "0",
+    }
+    onChangePresets([next, ...presets])
+  }
+
+  const removePreset = (id: string) => {
+    onChangePresets(presets.filter((p) => p.id !== id))
+  }
 
   return (
     <div
@@ -1845,6 +2350,164 @@ function SettingsModal({
             </div>
           </div>
 
+          {/* After save behavior */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-blue-300" />
+              <span className="text-sm font-semibold text-white">After saving a shift</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Choose what happens after you tap <span className="text-slate-200 font-medium">Confirm Shift</span>.
+            </p>
+            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-white/5 border border-white/10">
+              <button
+                type="button"
+                onClick={() => onChangeAfterSaveBehavior("staySameDayClear")}
+                aria-pressed={afterSaveBehavior === "staySameDayClear"}
+                className={`py-2 rounded-xl text-[11px] font-semibold transition-all ${
+                  afterSaveBehavior === "staySameDayClear"
+                    ? "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                    : "text-slate-300 hover:bg-white/5"
+                }`}
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeAfterSaveBehavior("stayNextDay")}
+                aria-pressed={afterSaveBehavior === "stayNextDay"}
+                className={`py-2 rounded-xl text-[11px] font-semibold transition-all ${
+                  afterSaveBehavior === "stayNextDay"
+                    ? "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                    : "text-slate-300 hover:bg-white/5"
+                }`}
+              >
+                Next day
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeAfterSaveBehavior("close")}
+                aria-pressed={afterSaveBehavior === "close"}
+                className={`py-2 rounded-xl text-[11px] font-semibold transition-all ${
+                  afterSaveBehavior === "close"
+                    ? "bg-blue-500/90 text-white shadow-[0_0_18px_-4px_rgba(59,130,246,0.7)]"
+                    : "text-slate-300 hover:bg-white/5"
+                }`}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          {/* Presets */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Presets</div>
+              <button
+                type="button"
+                onClick={addPreset}
+                className="h-8 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-semibold text-slate-200 transition-colors"
+              >
+                Add
+              </button>
+            </div>
+            <div className="space-y-2">
+              {presets.length === 0 ? (
+                <div className="text-[11px] text-slate-500">No presets yet.</div>
+              ) : (
+                presets.map((p) => (
+                  <div key={p.id} className="rounded-2xl bg-white/[0.04] border border-white/10 p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={p.name}
+                        onChange={(e) => upsertPreset(p.id, { name: e.target.value })}
+                        className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-sm font-semibold text-white outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removePreset(p.id)}
+                        className="w-9 h-9 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-400/20 flex items-center justify-center transition-colors"
+                        aria-label="Remove preset"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-300" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <select
+                        value={p.target}
+                        onChange={(e) => upsertPreset(p.id, { target: e.target.value as PresetTarget })}
+                        className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none [color-scheme:dark]"
+                      >
+                        <option value="servicesRaw">Services</option>
+                        <option value="tradeEarnings">Trading</option>
+                        <option value="teaEarnings">Tea</option>
+                      </select>
+                      <select
+                        value={p.mode}
+                        onChange={(e) => upsertPreset(p.id, { mode: e.target.value as PresetMode })}
+                        className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none [color-scheme:dark]"
+                      >
+                        <option value="replace">Replace</option>
+                        <option value="append">Append</option>
+                      </select>
+                      <input
+                        value={p.value}
+                        onChange={(e) => upsertPreset(p.id, { value: e.target.value })}
+                        className="px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[12px] font-semibold text-white outline-none tabular-nums"
+                        inputMode="decimal"
+                      />
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      Applies to{" "}
+                      {p.target === "servicesRaw" ? "Services" : p.target === "tradeEarnings" ? "Trading" : "Tea"} ·{" "}
+                      {p.mode === "replace" ? "replaces" : "appends"} value
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Backups */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Backups</div>
+              <button
+                type="button"
+                onClick={onDeleteAllBackups}
+                className="h-8 px-2.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-400/20 text-[11px] font-semibold text-red-200 transition-colors"
+                disabled={backups.length === 0}
+              >
+                Delete all
+              </button>
+            </div>
+            {backups.length === 0 ? (
+              <div className="text-[11px] text-slate-500">No backups yet. They’re created automatically.</div>
+            ) : (
+              <div className="space-y-2">
+                {backups.slice(0, 6).map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => onRestoreBackup(b)}
+                    className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                  >
+                    <div className="text-left min-w-0">
+                      <div className="text-[12px] font-semibold text-white truncate">
+                        {new Date(b.createdAt).toLocaleString()}
+                      </div>
+                      <div className="text-[10px] text-slate-500 truncate">
+                        {b.data.history.length} shifts · {Object.keys(b.data.drafts || {}).length} drafts
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-semibold text-blue-200">Restore</span>
+                  </button>
+                ))}
+                <div className="text-[10px] text-slate-500">Keeps the latest 10 backups.</div>
+              </div>
+            )}
+          </div>
+
           {/* Data management */}
           <div className="space-y-2">
             <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Data</div>
@@ -1867,6 +2530,354 @@ function SettingsModal({
               </button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ShiftDetailsModal({
+  selectedDate,
+  draftTotal,
+  justSaved,
+  currentRecord,
+  presets,
+  onClose,
+  onUpdateRecord,
+  onConfirmShift,
+  servicesInputRef,
+}: {
+  selectedDate: string
+  draftTotal: number
+  justSaved: boolean
+  currentRecord: DraftRecord
+  presets: Preset[]
+  onClose: () => void
+  onUpdateRecord: (field: keyof DraftRecord, value: any) => void
+  onConfirmShift: () => void
+  servicesInputRef: React.RefObject<HTMLInputElement | null>
+}) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const tradingInputRef = useRef<HTMLInputElement>(null)
+  const teaInputRef = useRef<HTMLInputElement>(null)
+
+  type CalcTarget = "servicesRaw" | "tradeEarnings" | "teaEarnings"
+  const [calcTarget, setCalcTarget] = useState<CalcTarget>("servicesRaw")
+  const [calcError, setCalcError] = useState<string | null>(null)
+
+  const activeExpr = useMemo(() => {
+    if (calcTarget === "servicesRaw") return String(currentRecord.servicesRaw ?? "")
+    if (calcTarget === "tradeEarnings") return String(currentRecord.tradeEarnings ?? "")
+    return String(currentRecord.teaEarnings ?? "")
+  }, [calcTarget, currentRecord.servicesRaw, currentRecord.tradeEarnings, currentRecord.teaEarnings])
+
+  const activePreview = useMemo(() => {
+    const expr = activeExpr.trim()
+    if (!expr) return null
+    if (!/[+\-*/()]/.test(expr)) return null
+    const res = evalMiniExpr(expr)
+    if (!res.ok) return null
+    return res.value
+  }, [activeExpr])
+
+  const focusTarget = () => {
+    if (calcTarget === "servicesRaw") servicesInputRef.current?.focus()
+    if (calcTarget === "tradeEarnings") tradingInputRef.current?.focus()
+    if (calcTarget === "teaEarnings") teaInputRef.current?.focus()
+  }
+
+  const updateActive = (next: string) => {
+    setCalcError(null)
+    onUpdateRecord(calcTarget, next)
+  }
+
+  const appendToActive = (s: string) => updateActive((activeExpr + s).slice(0, 32))
+  const backspaceActive = () => updateActive(activeExpr.slice(0, -1))
+  const clearActive = () => updateActive("")
+
+  const applyPreset = (p: Preset) => {
+    const current =
+      p.target === "servicesRaw"
+        ? String(currentRecord.servicesRaw ?? "")
+        : p.target === "tradeEarnings"
+          ? String(currentRecord.tradeEarnings ?? "")
+          : String(currentRecord.teaEarnings ?? "")
+    const next = p.mode === "append" ? (current + p.value).slice(0, 32) : p.value
+    onUpdateRecord(p.target, next)
+    setCalcTarget(p.target)
+    globalThis.setTimeout(() => {
+      if (p.target === "servicesRaw") servicesInputRef.current?.focus()
+      if (p.target === "tradeEarnings") tradingInputRef.current?.focus()
+      if (p.target === "teaEarnings") teaInputRef.current?.focus()
+    }, 0)
+  }
+
+  // iOS: prevent background rubber-band scroll without blurring inputs.
+  useEffect(() => {
+    const onTouchMove = (e: TouchEvent) => {
+      const panel = panelRef.current
+      const target = e.target as Node | null
+      if (!panel || !target) return
+      if (!panel.contains(target)) e.preventDefault()
+    }
+    document.addEventListener("touchmove", onTouchMove, { passive: false })
+    return () => document.removeEventListener("touchmove", onTouchMove)
+  }, [])
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Shift details"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm overflow-hidden overscroll-none"
+      onClick={onClose}
+      onTouchMove={(e) => e.preventDefault()}
+    >
+      <div
+        className="w-full sm:max-w-md h-[88dvh] sm:max-h-[88vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#0b1226] border border-white/10 shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        ref={panelRef}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-400/30 flex items-center justify-center shrink-0">
+              <Briefcase className="w-4 h-4 text-blue-300" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-white truncate">Shift Details</h3>
+              <p className="text-[11px] text-slate-400 truncate">{selectedDate}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close shift details"
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+          >
+            <X className="w-4 h-4 text-slate-300" />
+          </button>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-hidden p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-slate-400 tabular-nums">Today: {draftTotal.toFixed(2)} UAH</span>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-medium text-slate-400">
+                Total services amount <span className="text-slate-500">(× 3.5%)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => onUpdateRecord("hasBaseRate", !currentRecord.hasBaseRate)}
+                aria-pressed={currentRecord.hasBaseRate}
+                title={
+                  currentRecord.hasBaseRate
+                    ? "Base rate ON — adds +400 UAH (multiplier applies). Click to disable."
+                    : "Base rate OFF — click to add +400 UAH base shift rate."
+                }
+                className={`group flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full border transition-all ${
+                  currentRecord.hasBaseRate
+                    ? "border-cyan-300/40 bg-cyan-400/10 shadow-[0_0_14px_-4px_rgba(34,211,238,0.7)]"
+                    : "border-white/10 bg-white/5 hover:border-white/20"
+                }`}
+              >
+                <span className="relative flex items-center justify-center w-3 h-3">
+                  {currentRecord.hasBaseRate && (
+                    <span className="absolute inset-0 rounded-full bg-cyan-400/60 animate-ping" />
+                  )}
+                  <span
+                    className={`relative w-2 h-2 rounded-full transition-colors ${
+                      currentRecord.hasBaseRate ? "bg-cyan-300" : "bg-slate-600 group-hover:bg-slate-500"
+                    }`}
+                    style={
+                      currentRecord.hasBaseRate
+                        ? { boxShadow: "0 0 8px rgba(34,211,238,0.95), 0 0 14px rgba(6,182,212,0.7)" }
+                        : undefined
+                    }
+                  />
+                </span>
+                <span
+                  className={`text-[10px] font-semibold tabular-nums tracking-tight ${
+                    currentRecord.hasBaseRate ? "text-cyan-200" : "text-slate-400"
+                  }`}
+                >
+                  +400 UAH
+                </span>
+                <span className="text-[9px] text-slate-500 hidden sm:inline">base rate</span>
+              </button>
+            </div>
+            <div className="relative">
+              <input
+                ref={servicesInputRef}
+                autoFocus
+                type="text"
+                inputMode="decimal"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                value={currentRecord.servicesRaw}
+                onFocus={() => {
+                  setCalcTarget("servicesRaw")
+                  setCalcError(null)
+                }}
+                onChange={(e) => onUpdateRecord("servicesRaw", e.target.value)}
+                placeholder="0"
+                className="w-full px-4 py-3 pr-20 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500/60 outline-none transition-all"
+              />
+              {calcTarget === "servicesRaw" && activePreview !== null && (
+                <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold tabular-nums text-blue-200/70">
+                  = {activePreview}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
+                <Coins className="w-3 h-3" style={{ color: TRADING_COLOR }} />
+                Trading
+              </label>
+              <div className="relative">
+                <input
+                  ref={tradingInputRef}
+                  type="text"
+                  inputMode="decimal"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  value={currentRecord.tradeEarnings}
+                  onFocus={() => {
+                    setCalcTarget("tradeEarnings")
+                    setCalcError(null)
+                  }}
+                  onChange={(e) => onUpdateRecord("tradeEarnings", e.target.value)}
+                  placeholder="0"
+                  className="w-full px-3 py-3 pr-16 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-amber-500/60 focus:border-amber-500/60 outline-none transition-all"
+                />
+                {calcTarget === "tradeEarnings" && activePreview !== null && (
+                  <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold tabular-nums text-amber-200/70">
+                    = {activePreview}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-400 flex items-center gap-1">
+                <Coffee className="w-3 h-3" style={{ color: TEA_COLOR }} />
+                Tea (Tips)
+              </label>
+              <div className="relative">
+                <input
+                  ref={teaInputRef}
+                  type="text"
+                  inputMode="decimal"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  value={currentRecord.teaEarnings}
+                  onFocus={() => {
+                    setCalcTarget("teaEarnings")
+                    setCalcError(null)
+                  }}
+                  onChange={(e) => onUpdateRecord("teaEarnings", e.target.value)}
+                  placeholder="0"
+                  className="w-full px-3 py-3 pr-16 bg-white/5 border border-white/10 rounded-2xl text-base text-white placeholder:text-slate-600 focus:ring-2 focus:ring-pink-500/60 focus:border-pink-500/60 outline-none transition-all"
+                />
+                {calcTarget === "teaEarnings" && activePreview !== null && (
+                  <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold tabular-nums text-pink-200/70">
+                    = {activePreview}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Inline calculator bar (mobile-first) */}
+          <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold text-slate-300">Inline calc</div>
+              <div className="text-[10px] font-semibold text-slate-400">
+                Target:{" "}
+                <span className="text-slate-200">
+                  {calcTarget === "servicesRaw" ? "Services" : calcTarget === "tradeEarnings" ? "Trading" : "Tea"}
+                </span>
+              </div>
+            </div>
+
+            {calcError && <div className="text-[11px] text-red-300">{calcError}</div>}
+
+            <div className="grid grid-cols-6 gap-1.5">
+              {[
+                { k: "+", v: "+" },
+                { k: "−", v: "-" },
+                { k: "×", v: "*" },
+                { k: "÷", v: "/" },
+                { k: "(", v: "(" },
+                { k: ")", v: ")" },
+              ].map((b) => (
+                <button
+                  key={b.k}
+                  type="button"
+                  onClick={() => {
+                    appendToActive(b.v)
+                    focusTarget()
+                  }}
+                  className="h-10 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-semibold text-white transition-colors"
+                >
+                  {b.k}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {presets.length > 0 && (
+            <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[11px] font-semibold text-slate-300">Presets</div>
+                <div className="text-[10px] font-semibold text-slate-500">tap to apply</div>
+              </div>
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                {presets.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => applyPreset(p)}
+                    className="shrink-0 h-10 px-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-semibold text-slate-200 transition-colors"
+                    title={`${p.mode === "append" ? "Append" : "Replace"} ${p.value}`}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-white/10 shrink-0" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 16px)" }}>
+          <button
+            onClick={onConfirmShift}
+            disabled={draftTotal <= 0}
+            className={`relative w-full py-4 rounded-2xl font-semibold text-base transition-all flex items-center justify-center gap-2 ${
+              draftTotal > 0
+                ? "bg-blue-500 hover:bg-blue-400 text-white shadow-[0_0_30px_-4px_rgba(59,130,246,0.7),0_8px_24px_-8px_rgba(59,130,246,0.6)] active:scale-[0.98]"
+                : "bg-slate-800 text-slate-600 cursor-not-allowed"
+            }`}
+          >
+            {justSaved ? (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                Shift Saved
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                Confirm Shift
+              </>
+            )}
+          </button>
         </div>
       </div>
     </div>
