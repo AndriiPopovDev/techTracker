@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react"
 import { flushSync } from "react-dom"
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts"
-import { Calendar, Wallet, Briefcase, Percent, TrendingUp, TrendingDown, Coins, Coffee, CircleCheck as CheckCircle2, History as HistoryIcon, Sparkles, X, ChevronLeft, ChevronRight, Pencil, Trash2, Download, Upload, Target, Settings as SettingsIcon, Lock, Minus, LayoutGrid, Rows3 } from "lucide-react"
+import { Calendar, Wallet, Briefcase, Percent, TrendingUp, TrendingDown, Coins, Coffee, CircleCheck as CheckCircle2, History as HistoryIcon, Sparkles, X, ChevronLeft, ChevronRight, ChevronDown, Pencil, Trash2, Download, Upload, Target, Settings as SettingsIcon, Lock, Minus, LayoutGrid, Rows3 } from "lucide-react"
 import { toast } from "sonner"
 import { DayPicker } from "react-day-picker"
 
@@ -249,6 +249,7 @@ export default function TechExpertTracker() {
   const [backups, setBackups] = useState<BackupSnapshot[]>([])
   // Compact: legend next to chart, summary cards hidden. Detailed: cards visible, legend hidden.
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("compact")
+  const [thisMonthVisibleCount, setThisMonthVisibleCount] = useState(4)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const shiftModalServicesInputRef = useRef<HTMLInputElement>(null)
 
@@ -369,6 +370,10 @@ export default function TechExpertTracker() {
     () => history.filter((e) => monthKeyOf(e.date) === selectedMonthKey),
     [history, selectedMonthKey],
   )
+
+  useEffect(() => {
+    setThisMonthVisibleCount(4)
+  }, [selectedMonthKey])
 
   const dayTotals = useMemo(() => {
     const map: Record<string, number> = {}
@@ -1335,7 +1340,7 @@ export default function TechExpertTracker() {
             </div>
           ) : (
             <ul className="space-y-2">
-              {monthEntries.slice(0, 5).map((entry) => {
+              {monthEntries.slice(0, Math.min(thisMonthVisibleCount, monthEntries.length)).map((entry) => {
                 const s = entryRawServices(entry) * 0.035 * (1 + globalMultiplier)
                 const b = entryRawBase(entry) * (1 + globalMultiplier)
                 const t = entryTrading(entry)
@@ -1375,6 +1380,42 @@ export default function TechExpertTracker() {
                   </li>
                 )
               })}
+
+              {monthEntries.length > thisMonthVisibleCount && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setThisMonthVisibleCount((c) => c + 4)}
+                    className="w-full relative flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5 hover:bg-white/[0.06] transition-colors overflow-hidden"
+                    aria-label="Show more shifts"
+                  >
+                    {/* Blurred preview of the next (hidden) shift */}
+                    <div className="flex items-center justify-between w-full gap-3">
+                      <div className="min-w-0 blur-[2px] opacity-60">
+                        <div className="text-sm font-medium text-white">
+                          {new Date(monthEntries[thisMonthVisibleCount].date).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-slate-400">
+                          +{Math.min(4, monthEntries.length - thisMonthVisibleCount)} more
+                        </div>
+                      </div>
+                      <div className="shrink-0 blur-[2px] opacity-60 text-right">
+                        <div className="text-base font-bold text-white tabular-nums">••••</div>
+                        <div className="text-[10px] text-slate-500">UAH</div>
+                      </div>
+                    </div>
+
+                    {/* Unblurred affordance */}
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 text-[11px] font-semibold text-blue-300">
+                      More <ChevronDown className="w-4 h-4" />
+                    </span>
+                  </button>
+                </li>
+              )}
             </ul>
           )}
         </section>
