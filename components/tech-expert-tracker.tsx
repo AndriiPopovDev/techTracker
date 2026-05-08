@@ -515,17 +515,25 @@ export default function TechExpertTracker() {
     pushBackup("daily")
     const prevHistory = history
     const prevDrafts = drafts
+    const existing = history.find((e) => e.date === selectedDate)
+    const mergedServicesRaw = existing ? entryRawServices(existing) + draftServicesRaw : draftServicesRaw
+    const mergedTrading = existing ? entryTrading(existing) + draftTrading : draftTrading
+    const mergedTea = existing ? entryTea(existing) + draftTea : draftTea
+    const mergedHasBase = existing ? entryRawBase(existing) > 0 || currentRecord.hasBaseRate : currentRecord.hasBaseRate
+
     const entry: HistoryEntry = {
-      id: `${selectedDate}-${Date.now()}`,
+      id: existing?.id ?? `${selectedDate}-${Date.now()}`,
       date: selectedDate,
       savedAt: Date.now(),
-      servicesRaw: draftServicesRaw,
-      hasBaseRate: currentRecord.hasBaseRate,
-      baseRateRaw: draftBaseRaw,
-      tradeEarnings: Number(draftTrading.toFixed(2)),
-      teaEarnings: Number(draftTea.toFixed(2)),
+      servicesRaw: mergedServicesRaw,
+      hasBaseRate: mergedHasBase,
+      baseRateRaw: mergedHasBase ? 400 : 0,
+      tradeEarnings: Number(mergedTrading.toFixed(2)),
+      teaEarnings: Number(mergedTea.toFixed(2)),
     }
-    const nextHistory = [entry, ...history]
+
+    // One shift per day: if an entry for this date exists, merge-add the new draft values into it.
+    const nextHistory = existing ? [entry, ...history.filter((e) => e.date !== selectedDate)] : [entry, ...history]
     setHistory(nextHistory)
     localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory))
 
@@ -2689,14 +2697,32 @@ function ShiftDetailsModal({
               <p className="text-[11px] text-slate-400 truncate">{selectedDate}</p>
             </div>
           </div>
-          <button
-            type="button"
-            aria-label="Close shift details"
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
-          >
-            <X className="w-4 h-4 text-slate-300" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={onConfirmShift}
+              disabled={draftTotal <= 0}
+              aria-label="Confirm shift"
+              className={`h-8 px-3 rounded-xl text-[11px] font-semibold transition-all inline-flex items-center justify-center gap-1.5 border ${
+                draftTotal > 0
+                  ? "bg-blue-500/25 hover:bg-blue-500/35 text-blue-100 border-blue-300/30 shadow-[0_0_18px_-6px_rgba(59,130,246,0.8)] active:scale-[0.99]"
+                  : "bg-white/5 text-slate-500 border-white/10 cursor-not-allowed"
+              }`}
+              title={draftTotal > 0 ? "Confirm Shift" : "Enter an amount to confirm"}
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              {justSaved ? "Saved" : "Confirm"}
+            </button>
+
+            <button
+              type="button"
+              aria-label="Close shift details"
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+            >
+              <X className="w-4 h-4 text-slate-300" />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 min-h-0 overflow-hidden p-4 space-y-4">
@@ -2897,7 +2923,10 @@ function ShiftDetailsModal({
           )}
         </div>
 
-        <div className="p-4 border-t border-white/10 shrink-0" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 16px)" }}>
+        <div
+          className="hidden sm:block p-4 border-t border-white/10 shrink-0"
+          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 16px)" }}
+        >
           <button
             onClick={onConfirmShift}
             disabled={draftTotal <= 0}
