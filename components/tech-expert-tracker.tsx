@@ -926,7 +926,8 @@ export default function TechExpertTracker() {
   const fracTea = cumTotal > 0 ? Math.min(monthTotals.tea / cumTotal, 1) : 0
 
   const [selYear, selMonth] = selectedMonthKey.split("-").map(Number)
-  const selectedMonthLabel = `${MONTH_NAMES[selMonth - 1]} ${selYear}`
+  const selectedMonthName = MONTH_NAMES[selMonth - 1]
+  const selectedMonthLabel = `${selectedMonthName} ${selYear}`
 
   return (
     <div className="min-h-screen text-slate-100 font-sans bg-fixed bg-[radial-gradient(ellipse_at_top,_#1e3a8a_0%,_#0b1226_45%,_#05080f_100%)]">
@@ -1107,41 +1108,45 @@ export default function TechExpertTracker() {
                 Each row: dot + colored icon + "Name:" + final UAH + subtle delta.
                 Name and value sit close together (gap-1) for a tight, readable list. */}
             {layoutMode === "compact" && (
-              <ul className="flex-1 min-w-0 self-center space-y-0.5 py-0.5">
+              <ul className="flex-1 min-w-0 self-center space-y-1 py-0.5">
                 {legendItems.length === 0 ? (
                   <li className="text-[11px] text-slate-500">No data yet</li>
                 ) : (
-                  legendItems.map((item) => (
-                    <li key={item.name} className="flex items-center gap-2 min-w-0 leading-none">
-                      <span
-                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                        style={{ background: item.color, boxShadow: `0 0 6px ${item.color}` }}
-                      />
-
-                      <span className="inline-flex items-center gap-1 shrink-0">
+                  legendItems.map((item) => {
+                    const displayName = item.name === "Tea" ? "Tips" : item.name
+                    return (
+                      <li
+                        key={item.name}
+                        className="flex items-center gap-1.5 min-w-0 leading-none"
+                      >
+                        <span
+                          className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ background: item.color, boxShadow: `0 0 6px ${item.color}` }}
+                        />
                         <span className="shrink-0" style={{ color: item.color }}>
                           {item.icon}
                         </span>
-                        <span className="text-slate-500 text-[11px] sm:text-xs font-semibold">:</span>
-                      </span>
-
-                      <span className="sr-only">{item.name}</span>
-
-                      <span className="text-[11px] sm:text-xs font-semibold text-white tabular-nums">
-                        {fmtUah(item.value)}
-                      </span>
-                      {item.delta !== undefined && Math.abs(item.delta) >= 0.5 && (
-                        <span
-                          className={`text-[9px] sm:text-[10px] font-medium tabular-nums shrink-0 ${
-                            item.delta > 0 ? "text-cyan-300/90" : "text-red-300/90"
-                          }`}
-                        >
-                          {item.delta > 0 ? "+" : "-"}
-                          {fmtUah(Math.abs(item.delta))}
+                        <span className="text-[11px] sm:text-xs font-medium text-slate-300 truncate">
+                          {displayName}
                         </span>
-                      )}
-                    </li>
-                  ))
+                        <span className="text-slate-500">:</span>
+                        <span className="text-[11px] sm:text-xs font-semibold text-white tabular-nums">
+                          {fmtUah(item.value)}
+                        </span>
+                        <span className="text-[10px] text-slate-500">₴</span>
+                        {item.delta !== undefined && Math.abs(item.delta) >= 0.5 && (
+                          <span
+                            className={`text-[9px] sm:text-[10px] font-medium tabular-nums shrink-0 ${
+                              item.delta > 0 ? "text-cyan-300/90" : "text-red-300/90"
+                            }`}
+                          >
+                            {item.delta > 0 ? "+" : "-"}
+                            {fmtUah(Math.abs(item.delta))}
+                          </span>
+                        )}
+                      </li>
+                    )
+                  })
                 )}
               </ul>
             )}
@@ -1169,22 +1174,26 @@ export default function TechExpertTracker() {
                 </div>
               </div>
 
-              {/* Avg + Forecast cardlet (live projection) */}
+              {/* Forecast — slim single-line summary, secondary "Avg per shift" below */}
               <div
-                className={`mt-2 w-full max-w-[180px] rounded-2xl border border-cyan-300/20 bg-cyan-400/5 px-2.5 py-1.5 ${
-                  layoutMode === "detailed" ? "mx-auto" : ""
+                className={`mt-1.5 flex flex-col items-end gap-0.5 ${
+                  layoutMode === "detailed" ? "items-center" : "items-end"
                 }`}
-                style={{ boxShadow: "0 0 0 1px rgba(0,242,255,0.08) inset, 0 0 18px rgba(0,242,255,0.10)" }}
               >
-                <div className="text-[9px] uppercase tracking-wider text-slate-400">Forecast for {selectedMonthLabel}</div>
-                <div
-                  className="mt-0.5 text-[13px] font-bold tabular-nums text-cyan-200 animate-pulse"
-                  style={{ textShadow: "0 0 10px rgba(0,242,255,0.55), 0 0 22px rgba(0,242,255,0.25)" }}
-                >
-                  {fmtUah(avgForecastTotal)} ₴
+                <div className="inline-flex items-baseline gap-1.5 text-[10px] leading-none">
+                  <span className="text-slate-500">Forecast {selectedMonthName}</span>
+                  <span
+                    className="text-[11px] font-semibold tabular-nums text-cyan-200/90"
+                    style={{ textShadow: "0 0 8px rgba(0,242,255,0.35)" }}
+                  >
+                    {fmtUah(avgForecastTotal)}
+                  </span>
+                  <span className="text-[9px] text-cyan-300/60">₴</span>
                 </div>
-                <div className="mt-0.5 text-[10px] text-slate-400">
-                  Avg per shift: <span className="font-semibold tabular-nums text-slate-200">{fmtUah(avgPerShift)}</span> ₴
+                <div className="text-[9px] leading-none text-slate-500">
+                  Avg per shift{" "}
+                  <span className="font-semibold tabular-nums text-slate-300">{fmtUah(avgPerShift)}</span>
+                  <span className="text-slate-600"> ₴</span>
                 </div>
               </div>
             </div>
