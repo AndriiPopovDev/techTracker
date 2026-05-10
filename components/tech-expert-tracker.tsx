@@ -6,7 +6,6 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis
 import { Calendar, Wallet, Briefcase, Percent, TrendingUp, TrendingDown, Coins, Coffee, CircleCheck as CheckCircle2, History as HistoryIcon, Sparkles, X, ChevronLeft, ChevronRight, ChevronDown, Pencil, Trash2, Download, Upload, Target, Settings as SettingsIcon, Lock, Minus, LayoutGrid, Rows3 } from "lucide-react"
 import { toast } from "sonner"
 import { DayPicker } from "react-day-picker"
-import { HeatmapCalendar } from "@/components/heatmap-calendar"
 
 const SERVICES_COLOR = "#3b82f6" // blue
 const BASE_COLOR = "#22c55e" // green
@@ -255,8 +254,6 @@ export default function TechExpertTracker() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shiftModalOpen, setShiftModalOpen] = useState(false)
   const [calendarOpen, setCalendarOpen] = useState(false)
-  const [heatmapOpen, setHeatmapOpen] = useState(false)
-  const heatmapRef = useRef<HTMLDivElement>(null)
   const [afterSaveBehavior, setAfterSaveBehavior] = useState<AfterSaveBehavior>("staySameDayClear")
   const [presets, setPresets] = useState<Preset[]>(DEFAULT_PRESETS)
   const [backups, setBackups] = useState<BackupSnapshot[]>([])
@@ -387,18 +384,6 @@ export default function TechExpertTracker() {
   useEffect(() => {
     setThisMonthVisibleCount(4)
   }, [selectedMonthKey])
-
-  // Close heatmap popover when clicking outside
-  useEffect(() => {
-    if (!heatmapOpen) return
-    const handleClickOutside = (e: MouseEvent) => {
-      if (heatmapRef.current && !heatmapRef.current.contains(e.target as Node)) {
-        setHeatmapOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
-  }, [heatmapOpen])
 
   const dayTotals = useMemo(() => {
     const map: Record<string, number> = {}
@@ -964,21 +949,6 @@ export default function TechExpertTracker() {
                 className="bg-transparent border-none outline-none text-xs font-medium text-slate-100 cursor-pointer w-[100px] [color-scheme:dark]"
               />
             </label>
-            <div ref={heatmapRef} className="relative">
-              <button
-                type="button"
-                aria-label="Open heatmap calendar"
-                onClick={() => setHeatmapOpen((prev) => !prev)}
-                className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 backdrop-blur-md border border-white/10 flex items-center justify-center transition-colors"
-              >
-                <Calendar className="w-4 h-4 text-blue-300" />
-              </button>
-              {heatmapOpen && (
-                <div className="absolute right-0 top-full mt-2 z-50 rounded-xl bg-slate-900 border border-white/10 shadow-2xl">
-                  <HeatmapCalendar />
-                </div>
-              )}
-            </div>
             <button
               type="button"
               aria-label="Open calendar"
