@@ -668,7 +668,8 @@ export default function TechExpertTracker() {
   }
 
   const editEntry = (entry: HistoryEntry) => {
-    // Remove from history, populate the form for that date, switch selected date and close modal
+    // Remove from history and prefill the draft for that date so the form
+    // shows the entry's existing values when it opens.
     const nextHistory = history.filter((e) => e.id !== entry.id)
     setHistory(nextHistory)
     localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory))
@@ -684,8 +685,17 @@ export default function TechExpertTracker() {
     }
     setDrafts(nextDrafts)
     localStorage.setItem(DRAFT_KEY, JSON.stringify(nextDrafts))
-    setSelectedDate(entry.date)
-    setHistoryOpen(false)
+
+    // Switch the dashboard to the edited date, close the history sheet, and
+    // open the shift edit modal in the same user gesture so the experience is
+    // a single seamless transition (no extra FAB tap required). flushSync is
+    // used so iOS Safari reliably surfaces the keyboard on the focused input.
+    flushSync(() => {
+      setSelectedDate(entry.date)
+      setHistoryOpen(false)
+      setShiftModalOpen(true)
+    })
+    shiftModalServicesInputRef.current?.focus()
   }
 
   const exportData = () => {
