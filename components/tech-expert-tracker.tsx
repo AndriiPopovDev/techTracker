@@ -1183,7 +1183,7 @@ export default function TechExpertTracker() {
                 <div className="inline-flex items-baseline gap-1.5 text-[10px] leading-none">
                   <span className="text-slate-500">Forecast {selectedMonthName}</span>
                   <span
-                    className="text-[11px] font-semibold tabular-nums text-cyan-200/90"
+                    className="text-[11px] font-semibold tabular-nums text-cyan-200/90 animate-pulse"
                     style={{ textShadow: "0 0 8px rgba(0,242,255,0.35)" }}
                   >
                     {fmtUah(avgForecastTotal)}
@@ -1192,7 +1192,7 @@ export default function TechExpertTracker() {
                 </div>
                 <div className="text-[9px] leading-none text-slate-500">
                   Avg per shift{" "}
-                  <span className="font-semibold tabular-nums text-slate-300">{fmtUah(avgPerShift)}</span>
+                  <span className="font-semibold tabular-nums text-slate-300 animate-pulse">{fmtUah(avgPerShift)}</span>
                   <span className="text-slate-600"> ₴</span>
                 </div>
               </div>
