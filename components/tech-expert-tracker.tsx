@@ -975,7 +975,7 @@ export default function TechExpertTracker() {
               </button>
               {heatmapOpen && (
                 <div className="absolute right-0 top-full mt-2 z-50 rounded-xl bg-slate-900 border border-white/10 shadow-2xl">
-                  <HeatmapCalendar />
+                  <HeatmapCalendar monthKey={selectedMonthKey} dayTotals={dayTotals} />
                 </div>
               )}
             </div>
