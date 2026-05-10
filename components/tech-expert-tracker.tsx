@@ -1174,9 +1174,9 @@ export default function TechExpertTracker() {
                 </div>
               </div>
 
-              {/* Forecast — slim single-line summary, neon-glowing "Avg per shift" pill below */}
+              {/* Forecast — slim single-line summary, secondary "Avg per shift" below */}
               <div
-                className={`mt-1.5 flex flex-col gap-1 ${
+                className={`mt-1.5 flex flex-col items-end gap-0.5 ${
                   layoutMode === "detailed" ? "items-center" : "items-end"
                 }`}
               >
@@ -1190,16 +1190,10 @@ export default function TechExpertTracker() {
                   </span>
                   <span className="text-[9px] text-cyan-300/60">₴</span>
                 </div>
-
-                <div className="inline-flex items-baseline gap-1 rounded-full border border-cyan-300/40 bg-slate-900/60 px-2 py-0.5 shadow-[0_0_15px_#00ffff]">
-                  <span className="text-[9px] uppercase tracking-wider text-slate-400">Avg per shift</span>
-                  <span
-                    className="text-[11px] font-bold tabular-nums text-cyan-100 animate-pulse"
-                    style={{ textShadow: "0 0 8px rgba(0,242,255,0.7), 0 0 16px rgba(0,242,255,0.35)" }}
-                  >
-                    {fmtUah(avgPerShift)}
-                  </span>
-                  <span className="text-[9px] text-cyan-300/70">₴</span>
+                <div className="text-[9px] leading-none text-slate-500">
+                  Avg per shift{" "}
+                  <span className="font-semibold tabular-nums text-slate-300">{fmtUah(avgPerShift)}</span>
+                  <span className="text-slate-600"> ₴</span>
                 </div>
               </div>
             </div>
